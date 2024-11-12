@@ -16,3 +16,34 @@ for step in deployment_steps:
     step_dict[key]["step_number"] = step["step_number"]
     step_dict[key]["title"] = step["title"]
     step_dict[key]["commands"].extend(step["commands"])
+
+
+
+
+from collections import defaultdict
+
+# Original JSON list
+commands = [
+    {"command": "command1", "tags": {"user_story_id": 1, "developer": "A"}},
+    {"command": "command2", "tags": {"user_story_id": 2, "developer": "B"}},
+    {"command": "command3", "tags": {"user_story_id": 1, "developer": "A"}}
+]
+
+# Merging commands based on `user_story_id` and `developer`
+merged_commands_dict = defaultdict(lambda: {"command": "", "tags": {"user_story_id": None, "developer": None}})
+
+for command in commands:
+    key = (command["tags"]["user_story_id"], command["tags"]["developer"])
+    # Initialize or update the command field with newline separation
+    if merged_commands_dict[key]["command"]:
+        merged_commands_dict[key]["command"] += "\n" + command["command"]
+    else:
+        merged_commands_dict[key]["command"] = command["command"]
+    # Set the tags only once
+    merged_commands_dict[key]["tags"]["user_story_id"] = command["tags"]["user_story_id"]
+    merged_commands_dict[key]["tags"]["developer"] = command["tags"]["developer"]
+
+# Convert dictionary back to list format
+merged_commands = list(merged_commands_dict.values())
+
+print(merged_commands)
