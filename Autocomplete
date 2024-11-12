@@ -1,168 +1,165 @@
-You're correct that in Angular Material 18, the `<mat-chip-list>` component has been replaced by more specific components to better align with accessibility standards and provide clearer semantics. The new components are:
+In Angular Material 18, the `<mat-chip-row>` component no longer supports the `selectable` property directly. This component is specifically designed for grid-based or row-based layouts, primarily for input patterns rather than selection patterns. 
 
-- **`<mat-chip-listbox>`**: Used for selection patterns, allowing users to select one or multiple chips.
-- **`<mat-chip-grid>`**: Used for input patterns, enabling users to add and remove chips dynamically.
+For an autocomplete textbox with both single and multi-select capabilities, you may need to adjust the approach to use `<mat-chip-listbox>` with `<mat-chip-option>` if selectable behavior is required. Here’s how you can adjust the implementation:
 
-To create an autocomplete textbox that supports both single and multi-select functionalities, and allows for custom values not present in the predefined options, you can use the `<mat-chip-grid>` component in combination with `<mat-chip-row>`. Here's how you can implement it:
+### Updated Implementation with `<mat-chip-listbox>` and `<mat-chip-option>`
 
-**1. Install Angular Material:**
+1. **Install Angular Material** (if not done already):
 
-Ensure that Angular Material is added to your project:
+   ```bash
+   ng add @angular/material
+   ```
 
-```bash
-ng add @angular/material
-```
+2. **Import Required Modules**:
 
-**2. Import Necessary Modules:**
+   ```typescript
+   import { MatAutocompleteModule } from '@angular/material/autocomplete';
+   import { MatChipsModule } from '@angular/material/chips';
+   import { ReactiveFormsModule, FormsModule } from '@angular/forms';
 
-In your Angular module, import the required modules:
+   @NgModule({
+     imports: [
+       MatAutocompleteModule,
+       MatChipsModule,
+       ReactiveFormsModule,
+       FormsModule,
+       // other imports
+     ]
+   })
+   export class AppModule {}
+   ```
 
-```typescript
-import { MatAutocompleteModule } from '@angular/material/autocomplete';
-import { MatChipsModule } from '@angular/material/chips';
-import { ReactiveFormsModule, FormsModule } from '@angular/forms';
+3. **Create the Autocomplete Component**:
 
-@NgModule({
-  imports: [
-    MatAutocompleteModule,
-    MatChipsModule,
-    ReactiveFormsModule,
-    FormsModule,
-    // other imports
-  ],
-  // ...
-})
-export class AppModule {}
-```
+   Here is the component code using `<mat-chip-listbox>` with `<mat-chip-option>`, allowing for the selection and removal of items with custom values.
 
-**3. Create the Autocomplete Component:**
+   ```typescript
+   import { Component, OnInit, Input } from '@angular/core';
+   import { FormControl } from '@angular/forms';
+   import { MatAutocompleteSelectedEvent } from '@angular/material/autocomplete';
+   import { Observable } from 'rxjs';
+   import { map, startWith } from 'rxjs/operators';
 
-Develop a component that handles both single and multi-select modes, allowing users to input custom values:
+   @Component({
+     selector: 'app-custom-autocomplete',
+     template: `
+       <mat-form-field class="full-width">
+         <mat-chip-listbox
+           *ngIf="multiSelect"
+           [multiple]="multiSelect"
+           aria-label="Selected items"
+         >
+           <mat-chip-option
+             *ngFor="let value of selectedValues"
+             (removed)="remove(value)"
+             [value]="value"
+           >
+             {{ value }}
+             <button matChipRemove>
+               <mat-icon>cancel</mat-icon>
+             </button>
+           </mat-chip-option>
+           <input
+             matInput
+             [placeholder]="placeholder"
+             [formControl]="inputControl"
+             [matAutocomplete]="auto"
+             (keydown.enter)="addCustomValue()"
+           />
+         </mat-chip-listbox>
 
-```typescript
-import { Component, OnInit, Input } from '@angular/core';
-import { FormControl } from '@angular/forms';
-import { MatAutocompleteSelectedEvent } from '@angular/material/autocomplete';
-import { Observable } from 'rxjs';
-import { map, startWith } from 'rxjs/operators';
+         <input
+           *ngIf="!multiSelect"
+           matInput
+           [placeholder]="placeholder"
+           [formControl]="inputControl"
+           [matAutocomplete]="auto"
+           (keydown.enter)="addCustomValue()"
+         />
 
-@Component({
-  selector: 'app-custom-autocomplete',
-  template: `
-    <mat-form-field class="full-width">
-      <mat-chip-grid #chipGrid>
-        <mat-chip-row
-          *ngFor="let value of selectedValues"
-          [selectable]="true"
-          [removable]="true"
-          (removed)="remove(value)"
-        >
-          {{ value }}
-          <button matChipRemove>
-            <mat-icon>cancel</mat-icon>
-          </button>
-        </mat-chip-row>
-        <input
-          matInput
-          [placeholder]="placeholder"
-          [formControl]="inputControl"
-          [matAutocomplete]="auto"
-          [matChipInputFor]="chipGrid"
-          (matChipInputTokenEnd)="addCustomValue($event)"
-        />
-      </mat-chip-grid>
-      <mat-autocomplete
-        #auto="matAutocomplete"
-        [displayWith]="displayFn"
-        (optionSelected)="onOptionSelected($event)"
-      >
-        <mat-option *ngFor="let option of filteredOptions | async" [value]="option">
-          {{ option }}
-        </mat-option>
-      </mat-autocomplete>
-    </mat-form-field>
-  `,
-  styles: [`
-    .full-width { width: 100%; }
-  `]
-})
-export class CustomAutocompleteComponent implements OnInit {
-  @Input() options: string[] = [];
-  @Input() placeholder: string = 'Select or type';
-  @Input() multiSelect: boolean = false;
+         <mat-autocomplete
+           #auto="matAutocomplete"
+           [displayWith]="displayFn"
+           (optionSelected)="onOptionSelected($event)"
+         >
+           <mat-option *ngFor="let option of filteredOptions | async" [value]="option">
+             {{ option }}
+           </mat-option>
+         </mat-autocomplete>
+       </mat-form-field>
+     `,
+     styles: [`
+       .full-width { width: 100%; }
+     `]
+   })
+   export class CustomAutocompleteComponent implements OnInit {
+     @Input() options: string[] = [];
+     @Input() placeholder: string = 'Select or type';
+     @Input() multiSelect: boolean = false;
 
-  inputControl = new FormControl('');
-  filteredOptions!: Observable<string[]>;
-  selectedValues: string[] = [];
+     inputControl = new FormControl('');
+     filteredOptions!: Observable<string[]>;
+     selectedValues: string[] = [];
 
-  ngOnInit() {
-    this.filteredOptions = this.inputControl.valueChanges.pipe(
-      startWith(''),
-      map(value => this._filter(value || ''))
-    );
-  }
+     ngOnInit() {
+       this.filteredOptions = this.inputControl.valueChanges.pipe(
+         startWith(''),
+         map(value => this._filter(value || ''))
+       );
+     }
 
-  displayFn(value: string): string {
-    return value || '';
-  }
+     displayFn(value: string): string {
+       return value || '';
+     }
 
-  private _filter(value: string): string[] {
-    const filterValue = value.toLowerCase();
-    return this.options.filter(option => option.toLowerCase().includes(filterValue));
-  }
+     private _filter(value: string): string[] {
+       const filterValue = value.toLowerCase();
+       return this.options.filter(option => option.toLowerCase().includes(filterValue));
+     }
 
-  addCustomValue(event: any) {
-    const input = event.input;
-    const value = event.value;
+     addCustomValue() {
+       const value = this.inputControl.value;
+       if (value && (!this.selectedValues.includes(value) || !this.multiSelect)) {
+         this.multiSelect ? this.selectedValues.push(value) : (this.selectedValues = [value]);
+       }
+       this.inputControl.setValue('');
+     }
 
-    if ((value || '').trim()) {
-      if (!this.selectedValues.includes(value.trim())) {
-        this.selectedValues.push(value.trim());
-      }
-    }
+     onOptionSelected(event: MatAutocompleteSelectedEvent) {
+       const value = event.option.viewValue;
+       if (!this.selectedValues.includes(value)) {
+         this.multiSelect ? this.selectedValues.push(value) : (this.selectedValues = [value]);
+       }
+       this.inputControl.setValue('');
+     }
 
-    if (input) {
-      input.value = '';
-    }
-    this.inputControl.setValue(null);
-  }
+     remove(value: string): void {
+       const index = this.selectedValues.indexOf(value);
+       if (index >= 0) {
+         this.selectedValues.splice(index, 1);
+       }
+     }
+   }
+   ```
 
-  onOptionSelected(event: MatAutocompleteSelectedEvent) {
-    const value = event.option.viewValue;
-    if (!this.selectedValues.includes(value)) {
-      this.selectedValues.push(value);
-    }
-    this.inputControl.setValue('');
-  }
+4. **Using the Component in the Template**:
 
-  remove(value: string): void {
-    const index = this.selectedValues.indexOf(value);
-    if (index >= 0) {
-      this.selectedValues.splice(index, 1);
-    }
-  }
-}
-```
+   Use the component in your Angular template, configuring it for single or multi-select mode as needed.
 
-**4. Use the Autocomplete Component:**
+   ```html
+   <app-custom-autocomplete
+     [options]="['Option 1', 'Option 2', 'Option 3']"
+     placeholder="Choose an option"
+     [multiSelect]="true"
+   ></app-custom-autocomplete>
+   ```
 
-In your template, utilize the component and configure it for single or multi-select mode:
+### Explanation:
 
-```html
-<app-custom-autocomplete
-  [options]="['Option 1', 'Option 2', 'Option 3']"
-  placeholder="Choose an option"
-  [multiSelect]="true"
-></app-custom-autocomplete>
-```
+- **`<mat-chip-listbox>`**: Allows multiple chips to be selected if `multiSelect` is set to `true`.
+- **`<mat-chip-option>`**: Each option within the listbox, representing a selectable chip. It supports the `removable` option with a button to remove items.
+- **`addCustomValue()`**: Adds values not in the options list, supporting custom entries.
+- **`onOptionSelected()`**: Handles selected items from the autocomplete dropdown.
+- **`remove()`**: Allows for the removal of selected chips.
 
-**Explanation:**
-
-- **`<mat-chip-grid>`**: Serves as the container for the chips and input field, suitable for input patterns where users can add and remove chips dynamically.
-- **`<mat-chip-row>`**: Represents each chip within the grid, supporting selection and removal.
-- **`matChipInputFor`**: Associates the input field with the chip grid, enabling the addition of new chips.
-- **`addCustomValue()`**: Handles the addition of custom values not present in the predefined options.
-- **`onOptionSelected()`**: Manages the selection of options from the autocomplete dropdown.
-- **`remove()`**: Allows for the removal of chips from the selection.
-
-This implementation aligns with Angular Material 18's updated components and provides a flexible autocomplete textbox that supports both single and multi-select functionalities, including the addition of custom values. 
+This approach provides a flexible autocomplete with Angular Material 18 that supports both single and multi-selection and accepts custom values.
