@@ -1,0 +1,18 @@
+from collections import defaultdict
+
+# Original JSON list
+deployment_steps = [
+    {"step_number": 1, "title": "Service Turnover Instructions", "commands": []},
+    {"step_number": 2, "title": "Runway Instruction", "commands": []},
+    {"step_number": 1, "title": "Service Turnover Instructions", "commands": []},
+]
+
+# Merging steps
+merged_steps = []
+step_dict = defaultdict(lambda: {"step_number": None, "title": None, "commands": []})
+
+for step in deployment_steps:
+    key = (step["step_number"], step["title"])
+    step_dict[key]["step_number"] = step["step_number"]
+    step_dict[key]["title"] = step["title"]
+    step_dict[key]["commands"].extend(step["commands"])
