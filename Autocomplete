@@ -1,10 +1,10 @@
-To enhance the component for dynamic `formControlName` assignment at runtime, we can use Angular's `@Input()` to accept a `FormControl` or `FormControlName` dynamically and bind the component to that control.
+The cyclic dependency issue occurs because we're both injecting `NgControl` and implementing `ControlValueAccessor`, creating a loop when Angular tries to set up the form control. 
 
-When the `FormControl` or `FormControlName` is passed dynamically, the component can bind itself to the form control at runtime.
+To resolve this, let’s simplify the approach by removing the explicit `NgControl` injection and using the `ControlValueAccessor` interface directly. We’ll set up `formControl` to be optionally passed as an input and, if not provided, Angular will handle the binding via `formControlName`.
 
-Here's the enhanced component to handle `formControlName` dynamically:
+Here’s the adjusted code to avoid the cyclic dependency:
 
-### Enhanced Standalone Component Code
+### Adjusted Standalone Component Code
 
 ```typescript
 import {
@@ -12,16 +12,11 @@ import {
   OnInit,
   Input,
   forwardRef,
-  Optional,
-  Self,
 } from '@angular/core';
 import {
   ControlValueAccessor,
   NG_VALUE_ACCESSOR,
-  ControlContainer,
   FormControl,
-  FormControlDirective,
-  NgControl,
   ReactiveFormsModule,
 } from '@angular/forms';
 import { MatAutocompleteModule, MatAutocompleteSelectedEvent } from '@angular/material/autocomplete';
@@ -65,7 +60,7 @@ import { map, startWith } from 'rxjs/operators';
         <input
           matInput
           [placeholder]="placeholder"
-          [formControl]="formControl"
+          [formControl]="internalControl"
           [matAutocomplete]="auto"
           (keydown.enter)="addCustomValue()"
         />
@@ -75,7 +70,7 @@ import { map, startWith } from 'rxjs/operators';
         *ngIf="!multiSelect"
         matInput
         [placeholder]="placeholder"
-        [formControl]="formControl"
+        [formControl]="internalControl"
         [matAutocomplete]="auto"
         (keydown.enter)="addCustomValue()"
       />
@@ -110,38 +105,29 @@ export class CustomAutocompleteComponent implements OnInit, ControlValueAccessor
   @Input() multiSelect: boolean = false;
   @Input() formControl!: FormControl;
 
+  internalControl = new FormControl('');
   filteredOptions!: Observable<string[]>;
   selectedValues: string[] = [];
 
-  // ControlValueAccessor interface properties
   private onChange = (value: any) => {};
   private onTouched = () => {};
 
-  constructor(@Optional() @Self() public ngControl: NgControl) {
-    if (this.ngControl) {
-      this.ngControl.valueAccessor = this;
-    }
-  }
-
   ngOnInit() {
-    this.initializeControl();
-    this.filteredOptions = this.formControl.valueChanges.pipe(
+    // Initialize the control to use the provided form control or create an internal one
+    if (this.formControl) {
+      this.internalControl = this.formControl;
+    }
+
+    this.filteredOptions = this.internalControl.valueChanges.pipe(
       startWith(''),
       map(value => (this.options ? this._filter(value || '') : []))
     );
 
-    this.formControl.valueChanges.subscribe(value => {
+    this.internalControl.valueChanges.subscribe(value => {
       if (!this.multiSelect) {
         this.onChange(value);
       }
     });
-  }
-
-  initializeControl() {
-    if (!this.formControl) {
-      // Use the control assigned by Angular forms via ngControl if formControl is not set explicitly
-      this.formControl = this.ngControl?.control as FormControl;
-    }
   }
 
   displayFn(value: string): string {
@@ -154,12 +140,12 @@ export class CustomAutocompleteComponent implements OnInit, ControlValueAccessor
   }
 
   addCustomValue() {
-    const value = this.formControl.value;
+    const value = this.internalControl.value;
     if (value && (!this.selectedValues.includes(value) || !this.multiSelect)) {
       this.multiSelect ? this.selectedValues.push(value) : (this.selectedValues = [value]);
       this.onChange(this.selectedValues);  // Notify form control
     }
-    this.formControl.setValue('');
+    this.internalControl.setValue('');
   }
 
   onOptionSelected(event: MatAutocompleteSelectedEvent) {
@@ -168,7 +154,7 @@ export class CustomAutocompleteComponent implements OnInit, ControlValueAccessor
       this.multiSelect ? this.selectedValues.push(value) : (this.selectedValues = [value]);
       this.onChange(this.selectedValues);  // Notify form control
     }
-    this.formControl.setValue('');
+    this.internalControl.setValue('');
   }
 
   remove(value: string): void {
@@ -186,7 +172,7 @@ export class CustomAutocompleteComponent implements OnInit, ControlValueAccessor
     } else {
       this.selectedValues = [];
     }
-    this.formControl.setValue('');
+    this.internalControl.setValue('');
   }
 
   registerOnChange(fn: any): void {
@@ -199,9 +185,9 @@ export class CustomAutocompleteComponent implements OnInit, ControlValueAccessor
 
   setDisabledState?(isDisabled: boolean): void {
     if (isDisabled) {
-      this.formControl.disable();
+      this.internalControl.disable();
     } else {
-      this.formControl.enable();
+      this.internalControl.enable();
     }
   }
 }
@@ -209,15 +195,16 @@ export class CustomAutocompleteComponent implements OnInit, ControlValueAccessor
 
 ### Explanation of Changes
 
-- **Dynamic `formControl` Binding**: We added an optional `@Input() formControl` property that allows this control to be bound to an external `FormControl`. If `formControl` is not provided, it falls back to `NgControl` (from the parent form group via `formControlName`).
-- **Constructor Injection of `NgControl`**: We inject `NgControl` directly. When `formControlName` is assigned dynamically, Angular automatically sets the `ngControl` property, enabling this component to work with both inline and dynamically assigned form controls.
-- **`initializeControl()` Method**: This method checks if `formControl` is explicitly provided; otherwise, it defaults to `ngControl.control`.
+- **Removed `NgControl` Injection**: We removed `NgControl` to prevent cyclic dependencies.
+- **`internalControl`**: We created an `internalControl` property. If `formControl` is provided as an input, `internalControl` will be set to it; otherwise, it defaults to a standalone `FormControl`.
+- **Input Binding with `formControl`**: The component will either use the provided `formControl` or the `internalControl`, allowing compatibility with both reactive forms and manual form control assignments.
 
-### Usage Example in a Parent Component
+### Usage Example
+
+With this setup, you can use the component with both `formControlName` and directly bound `formControl`:
 
 ```html
 <form [formGroup]="myForm">
-  <!-- Use formControlName dynamically at runtime -->
   <app-custom-autocomplete
     formControlName="myControl"
     [options]="['Option 1', 'Option 2', 'Option 3']"
@@ -227,4 +214,13 @@ export class CustomAutocompleteComponent implements OnInit, ControlValueAccessor
 </form>
 ```
 
-In this example, you can dynamically assign `formControlName` at runtime, and it will bind correctly to this custom autocomplete component. If you provide a `formControl` directly, it will use that instead.
+Or, if you want to bind a control manually:
+
+```html
+<app-custom-autocomplete
+  [formControl]="myDynamicControl"
+  [options]="['Option 1', 'Option 2', 'Option 3']"
+  placeholder="Choose an option"
+  [multiSelect]="true"
+></app-custom-autocomplete>
+```
