@@ -1,10 +1,29 @@
-To convert this autocomplete component to a standalone component in Angular, you’ll need to import Angular Material and Forms modules directly in the component itself instead of relying on an external module. Here’s the updated code:
+To enhance the component for dynamic `formControlName` assignment at runtime, we can use Angular's `@Input()` to accept a `FormControl` or `FormControlName` dynamically and bind the component to that control.
 
-### Updated Standalone Component Code
+When the `FormControl` or `FormControlName` is passed dynamically, the component can bind itself to the form control at runtime.
+
+Here's the enhanced component to handle `formControlName` dynamically:
+
+### Enhanced Standalone Component Code
 
 ```typescript
-import { Component, OnInit, Input } from '@angular/core';
-import { FormControl, ReactiveFormsModule } from '@angular/forms';
+import {
+  Component,
+  OnInit,
+  Input,
+  forwardRef,
+  Optional,
+  Self,
+} from '@angular/core';
+import {
+  ControlValueAccessor,
+  NG_VALUE_ACCESSOR,
+  ControlContainer,
+  FormControl,
+  FormControlDirective,
+  NgControl,
+  ReactiveFormsModule,
+} from '@angular/forms';
 import { MatAutocompleteModule, MatAutocompleteSelectedEvent } from '@angular/material/autocomplete';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatIconModule } from '@angular/material/icon';
@@ -46,7 +65,7 @@ import { map, startWith } from 'rxjs/operators';
         <input
           matInput
           [placeholder]="placeholder"
-          [formControl]="inputControl"
+          [formControl]="formControl"
           [matAutocomplete]="auto"
           (keydown.enter)="addCustomValue()"
         />
@@ -56,7 +75,7 @@ import { map, startWith } from 'rxjs/operators';
         *ngIf="!multiSelect"
         matInput
         [placeholder]="placeholder"
-        [formControl]="inputControl"
+        [formControl]="formControl"
         [matAutocomplete]="auto"
         (keydown.enter)="addCustomValue()"
       />
@@ -66,7 +85,6 @@ import { map, startWith } from 'rxjs/operators';
         [displayWith]="displayFn"
         (optionSelected)="onOptionSelected($event)"
       >
-        <!-- Use ng-container to apply *ngIf and avoid multiple structural directives -->
         <ng-container *ngIf="filteredOptions | async as options">
           <mat-option *ngFor="let option of options" [value]="option">
             {{ option }}
@@ -77,23 +95,53 @@ import { map, startWith } from 'rxjs/operators';
   `,
   styles: [`
     .full-width { width: 100%; }
-  `]
+  `],
+  providers: [
+    {
+      provide: NG_VALUE_ACCESSOR,
+      useExisting: forwardRef(() => CustomAutocompleteComponent),
+      multi: true,
+    },
+  ],
 })
-export class CustomAutocompleteComponent implements OnInit {
+export class CustomAutocompleteComponent implements OnInit, ControlValueAccessor {
   @Input() options: string[] = [];
   @Input() placeholder: string = 'Select or type';
   @Input() multiSelect: boolean = false;
+  @Input() formControl!: FormControl;
 
-  inputControl = new FormControl('');
   filteredOptions!: Observable<string[]>;
   selectedValues: string[] = [];
 
+  // ControlValueAccessor interface properties
+  private onChange = (value: any) => {};
+  private onTouched = () => {};
+
+  constructor(@Optional() @Self() public ngControl: NgControl) {
+    if (this.ngControl) {
+      this.ngControl.valueAccessor = this;
+    }
+  }
+
   ngOnInit() {
-    // Ensure that filteredOptions is initialized properly, defaulting to an empty observable if options are empty
-    this.filteredOptions = this.inputControl.valueChanges.pipe(
+    this.initializeControl();
+    this.filteredOptions = this.formControl.valueChanges.pipe(
       startWith(''),
       map(value => (this.options ? this._filter(value || '') : []))
     );
+
+    this.formControl.valueChanges.subscribe(value => {
+      if (!this.multiSelect) {
+        this.onChange(value);
+      }
+    });
+  }
+
+  initializeControl() {
+    if (!this.formControl) {
+      // Use the control assigned by Angular forms via ngControl if formControl is not set explicitly
+      this.formControl = this.ngControl?.control as FormControl;
+    }
   }
 
   displayFn(value: string): string {
@@ -106,25 +154,54 @@ export class CustomAutocompleteComponent implements OnInit {
   }
 
   addCustomValue() {
-    const value = this.inputControl.value;
+    const value = this.formControl.value;
     if (value && (!this.selectedValues.includes(value) || !this.multiSelect)) {
       this.multiSelect ? this.selectedValues.push(value) : (this.selectedValues = [value]);
+      this.onChange(this.selectedValues);  // Notify form control
     }
-    this.inputControl.setValue('');
+    this.formControl.setValue('');
   }
 
   onOptionSelected(event: MatAutocompleteSelectedEvent) {
     const value = event.option.viewValue;
     if (!this.selectedValues.includes(value)) {
       this.multiSelect ? this.selectedValues.push(value) : (this.selectedValues = [value]);
+      this.onChange(this.selectedValues);  // Notify form control
     }
-    this.inputControl.setValue('');
+    this.formControl.setValue('');
   }
 
   remove(value: string): void {
     const index = this.selectedValues.indexOf(value);
     if (index >= 0) {
       this.selectedValues.splice(index, 1);
+      this.onChange(this.selectedValues);  // Notify form control
+    }
+  }
+
+  // ControlValueAccessor interface methods
+  writeValue(value: any): void {
+    if (value) {
+      this.selectedValues = Array.isArray(value) ? value : [value];
+    } else {
+      this.selectedValues = [];
+    }
+    this.formControl.setValue('');
+  }
+
+  registerOnChange(fn: any): void {
+    this.onChange = fn;
+  }
+
+  registerOnTouched(fn: any): void {
+    this.onTouched = fn;
+  }
+
+  setDisabledState?(isDisabled: boolean): void {
+    if (isDisabled) {
+      this.formControl.disable();
+    } else {
+      this.formControl.enable();
     }
   }
 }
@@ -132,8 +209,22 @@ export class CustomAutocompleteComponent implements OnInit {
 
 ### Explanation of Changes
 
-- **`standalone: true`**: This makes the component standalone.
-- **`imports` Array**: Instead of relying on a module, we import `ReactiveFormsModule`, `MatAutocompleteModule`, `MatChipsModule`, `MatIconModule`, `MatFormFieldModule`, `MatInputModule`, and `CommonModule` directly within the component.
-- **Template Adjustments**: The template code remains mostly the same, but it now uses an `<ng-container>` to handle multiple structural directives as discussed previously.
+- **Dynamic `formControl` Binding**: We added an optional `@Input() formControl` property that allows this control to be bound to an external `FormControl`. If `formControl` is not provided, it falls back to `NgControl` (from the parent form group via `formControlName`).
+- **Constructor Injection of `NgControl`**: We inject `NgControl` directly. When `formControlName` is assigned dynamically, Angular automatically sets the `ngControl` property, enabling this component to work with both inline and dynamically assigned form controls.
+- **`initializeControl()` Method**: This method checks if `formControl` is explicitly provided; otherwise, it defaults to `ngControl.control`.
 
-This component is now standalone and can be used independently without needing to be declared in an Angular module.
+### Usage Example in a Parent Component
+
+```html
+<form [formGroup]="myForm">
+  <!-- Use formControlName dynamically at runtime -->
+  <app-custom-autocomplete
+    formControlName="myControl"
+    [options]="['Option 1', 'Option 2', 'Option 3']"
+    placeholder="Choose an option"
+    [multiSelect]="true"
+  ></app-custom-autocomplete>
+</form>
+```
+
+In this example, you can dynamically assign `formControlName` at runtime, and it will bind correctly to this custom autocomplete component. If you provide a `formControl` directly, it will use that instead.
