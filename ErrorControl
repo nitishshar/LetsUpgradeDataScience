@@ -1,0 +1,119 @@
+To display all validation errors in one place in Angular Material, you can create a custom form error component to display all error messages at the top of the form. Here's a basic approach for this:
+
+1. **Create a Custom Error Component**:
+   - Create a component to collect all errors from the form controls and display them in one place.
+
+2. **Collect Errors in FormGroup**:
+   - Use Angular's reactive forms to collect error messages from each form control in a `FormGroup`.
+
+3. **Display Errors**:
+   - In your template, display the list of errors at the top of the form.
+
+Here's a sample code implementation:
+
+### app.component.html
+
+```html
+<form [formGroup]="form" (ngSubmit)="onSubmit()">
+  <!-- Display all errors at the top -->
+  <div *ngIf="formErrors.length > 0" class="error-summary">
+    <p *ngFor="let error of formErrors">{{ error }}</p>
+  </div>
+
+  <!-- Form fields -->
+  <mat-form-field>
+    <input matInput placeholder="Name" formControlName="name" />
+    <mat-error *ngIf="form.get('name').hasError('required')">
+      Name is required
+    </mat-error>
+  </mat-form-field>
+
+  <mat-form-field>
+    <input matInput placeholder="Email" formControlName="email" />
+    <mat-error *ngIf="form.get('email').hasError('email')">
+      Invalid email format
+    </mat-error>
+  </mat-form-field>
+
+  <button mat-raised-button type="submit">Submit</button>
+</form>
+```
+
+### app.component.ts
+
+```typescript
+import { Component, OnInit } from '@angular/core';
+import { FormBuilder, FormGroup, Validators } from '@angular/forms';
+
+@Component({
+  selector: 'app-root',
+  templateUrl: './app.component.html',
+  styleUrls: ['./app.component.css']
+})
+export class AppComponent implements OnInit {
+  form: FormGroup;
+  formErrors: string[] = [];
+
+  constructor(private fb: FormBuilder) {}
+
+  ngOnInit(): void {
+    this.form = this.fb.group({
+      name: ['', Validators.required],
+      email: ['', [Validators.required, Validators.email]],
+    });
+
+    this.form.valueChanges.subscribe(() => {
+      this.updateFormErrors();
+    });
+  }
+
+  updateFormErrors() {
+    this.formErrors = [];
+    for (const controlName in this.form.controls) {
+      const control = this.form.get(controlName);
+      if (control && control.errors && control.touched) {
+        for (const errorKey in control.errors) {
+          const errorMessage = this.getErrorMessage(controlName, errorKey);
+          if (errorMessage) {
+            this.formErrors.push(errorMessage);
+          }
+        }
+      }
+    }
+  }
+
+  getErrorMessage(controlName: string, errorKey: string): string | null {
+    const errorMessages = {
+      name: {
+        required: 'Name is required',
+      },
+      email: {
+        required: 'Email is required',
+        email: 'Email format is invalid',
+      },
+    };
+    return errorMessages[controlName]?.[errorKey] || null;
+  }
+
+  onSubmit() {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      this.updateFormErrors();
+    }
+  }
+}
+```
+
+### Explanation
+
+1. **updateFormErrors()**:
+   - This function iterates over each form control and collects error messages if the control has errors and has been touched.
+
+2. **getErrorMessage()**:
+   - This helper function returns specific error messages based on the control and error type.
+
+3. **Mark All as Touched on Submit**:
+   - In the `onSubmit` function, `markAllAsTouched` ensures that all controls show validation errors on submit if the form is invalid.
+
+4. **Display Errors in the Template**:
+   - At the top of the form, all errors collected in `formErrors` are displayed.
