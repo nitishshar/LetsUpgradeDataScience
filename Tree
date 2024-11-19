@@ -1,0 +1,140 @@
+To style a **`mat-tree`** in Angular 18 with indented labels, no expansion icons for leaf nodes, and without checkboxes, follow these steps:
+
+### 1. HTML Template
+
+Define your tree structure using Angular Material's `mat-tree` components:
+
+```html
+<mat-tree [dataSource]="dataSource" [treeControl]="treeControl" class="custom-tree">
+  <!-- Parent node template -->
+  <mat-tree-node *matTreeNodeDef="let node; when: hasChild" matTreeNodeToggle>
+    <div class="node-content">
+      <button mat-icon-button matTreeNodeToggle>
+        <mat-icon>
+          {{ treeControl.isExpanded(node) ? 'expand_more' : 'chevron_right' }}
+        </mat-icon>
+      </button>
+      <span>{{ node.name }}</span>
+    </div>
+  </mat-tree-node>
+
+  <!-- Leaf node template -->
+  <mat-tree-node *matTreeNodeDef="let node">
+    <div class="node-content">
+      <span>{{ node.name }}</span>
+    </div>
+  </mat-tree-node>
+</mat-tree>
+```
+
+### 2. Component TypeScript
+
+Set up your tree control and data source in the component:
+
+```typescript
+import { FlatTreeControl } from '@angular/cdk/tree';
+import { MatTreeFlatDataSource, MatTreeFlattener } from '@angular/material/tree';
+
+interface TreeNode {
+  name: string;
+  children?: TreeNode[];
+}
+
+interface FlatNode {
+  name: string;
+  level: number;
+  expandable: boolean;
+}
+
+@Component({
+  selector: 'app-custom-tree',
+  templateUrl: './custom-tree.component.html',
+  styleUrls: ['./custom-tree.component.css']
+})
+export class CustomTreeComponent {
+  private transformer = (node: TreeNode, level: number) => ({
+    name: node.name,
+    level: level,
+    expandable: !!node.children && node.children.length > 0
+  });
+
+  treeControl = new FlatTreeControl<FlatNode>(
+    node => node.level,
+    node => node.expandable
+  );
+
+  treeFlattener = new MatTreeFlattener(
+    this.transformer,
+    node => node.level,
+    node => node.expandable,
+    node => node.children
+  );
+
+  dataSource = new MatTreeFlatDataSource(this.treeControl, this.treeFlattener);
+
+  constructor() {
+    this.dataSource.data = TREE_DATA;
+  }
+
+  hasChild = (_: number, node: FlatNode) => node.expandable;
+}
+
+const TREE_DATA: TreeNode[] = [
+  {
+    name: 'Parent 1',
+    children: [
+      { name: 'Child 1' },
+      { name: 'Child 2' }
+    ]
+  },
+  {
+    name: 'Parent 2',
+    children: [
+      {
+        name: 'Child 3',
+        children: [
+          { name: 'Grandchild 1' },
+          { name: 'Grandchild 2' }
+        ]
+      }
+    ]
+  }
+];
+```
+
+### 3. CSS Styling
+
+Apply custom styles to achieve the desired appearance:
+
+```css
+.custom-tree .node-content {
+  display: flex;
+  align-items: center;
+}
+
+.custom-tree .node-content button {
+  visibility: hidden;
+}
+
+.custom-tree .mat-tree-node {
+  padding-left: 20px;
+}
+
+.custom-tree .mat-tree-node[aria-expanded='true'] > .node-content > button {
+  visibility: visible;
+}
+
+.custom-tree .mat-tree-node[aria-expanded='false'] > .node-content > button {
+  visibility: visible;
+}
+```
+
+**Explanation:**
+
+- **Indentation:** The `.mat-tree-node` class is targeted to apply left padding, creating the indentation effect for child nodes.
+
+- **Expansion Icons:** The `button` elements (which contain the expansion icons) are initially hidden using `visibility: hidden`. They are then made visible only for nodes that have children (i.e., expandable nodes) by checking the `aria-expanded` attribute.
+
+- **Checkboxes:** Since checkboxes are not included in the template, they will not appear in the tree.
+
+By implementing this setup, your `mat-tree` will display indented labels, omit expansion icons for leaf nodes, and exclude checkboxes, aligning with your specified requirements. 
