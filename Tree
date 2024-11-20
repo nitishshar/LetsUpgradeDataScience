@@ -1,58 +1,115 @@
-The issue of `.mat-mdc-form-field-infix` having a height greater than the `mat-mdc-form-field` height typically arises when there is extra padding or margin applied to the `infix` or `textarea` content, or if the content inside the `mat-mdc-form-field-infix` (e.g., a `textarea`) has a line-height or padding exceeding the parent container's size.
+// Add these styles to enhance the 3D effect globally
+.mat-mdc-form-field {
+  transform-style: preserve-3d;
+  
+  .mdc-notched-outline {
+    border-radius: 8px;
+    transition: all 0.3s ease;
+    border-color: rgba(0, 155, 218, 0.2);
+  }
 
-To fix this issue, you can adjust the styles of the `.mat-mdc-form-field-infix` or related elements like `textarea` to ensure consistency.
-
-### Solution 1: Adjust `.mat-mdc-form-field-infix` Height and Padding
-Add the following styles in your component's CSS/SCSS or global stylesheet:
-
-```css
-::ng-deep .mat-mdc-form-field-infix {
-  height: 100%; /* Ensure it matches the parent height */
-  padding: 0;   /* Remove extra padding */
-  align-items: center; /* Align content vertically */
-}
-```
-
-### Solution 2: Control `textarea` Styling
-If the `textarea` itself is causing the overflow, adjust its line-height, padding, and margins:
-
-```css
-::ng-deep mat-form-field textarea {
-  padding: 0; /* Remove extra padding */
-  line-height: 1.5; /* Adjust line height for better alignment */
-  height: auto; /* Let it scale based on rows */
-}
-```
-
-### Solution 3: Force Alignment with Flexbox
-Ensure the `infix` content is flex-aligned properly. Angular Material uses `display: flex` for `mat-mdc-form-field-infix`, so you can align items within it:
-
-```css
-::ng-deep .mat-mdc-form-field-infix {
-  display: flex;
-  align-items: center; /* Vertically align content */
-  padding: 0 12px; /* Adjust padding as needed */
-  height: 100%; /* Match the form-field height */
-}
-```
-
-### Solution 4: Set a Fixed Height for `mat-mdc-form-field`
-If none of the above works due to content inconsistencies, enforce a fixed height for the entire `mat-mdc-form-field`:
-
-```css
-::ng-deep mat-form-field {
-  height: 56px; /* Adjust as per your design */
+  &:hover .mdc-notched-outline {
+    border-color: rgba(0, 155, 218, 0.4);
+    box-shadow: 
+      0 3px 6px rgba(0, 0, 0, 0.05),
+      0 2px 4px rgba(0, 0, 0, 0.05);
+  }
 }
 
-::ng-deep .mat-mdc-form-field-infix {
-  height: 100%; /* Match parent */
-  padding: 0; /* Remove extra padding */
+// Enhance the container perspective
+.form-builder-container {
+  perspective: 2000px;
+  transform-style: preserve-3d;
 }
-```
 
-### Notes:
-1. Use `::ng-deep` if you're working with encapsulated component styles.
-2. Test the changes across all browsers to ensure consistent rendering.
-3. If you're customizing other elements like `mat-label` or `mat-icon`, ensure their height and alignment do not affect the layout.
+// Add smooth transitions
+* {
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
 
-These changes should resolve the issue by ensuring that the `infix` and its children do not exceed the height of the `mat-mdc-form-field`.
+
+
+
+
+.section-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+  gap: 24px;
+  padding: 16px;
+
+  .section-card {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 
+      0 5px 15px rgba(0, 0, 0, 0.1),
+      0 3px 6px rgba(0, 0, 0, 0.08);
+    overflow: hidden;
+    transform: perspective(1000px) rotateX(0deg);
+    transition: all 0.3s ease;
+    border: 1px solid rgba(0, 155, 218, 0.1);
+    
+    &:hover {
+      transform: perspective(1000px) rotateX(2deg) translateY(-5px);
+      box-shadow: 
+        0 8px 20px rgba(0, 0, 0, 0.12),
+        0 4px 8px rgba(0, 0, 0, 0.06);
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 20px;
+      background: linear-gradient(
+        to bottom,
+        rgba(0, 155, 218, 0.08),
+        rgba(0, 155, 218, 0.03)
+      );
+      border-bottom: 1px solid rgba(0, 155, 218, 0.1);
+      position: relative;
+      
+      &:before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 1px;
+        background: linear-gradient(
+          to right,
+          transparent,
+          rgba(255, 255, 255, 0.5),
+          transparent
+        );
+      }
+
+      mat-icon {
+        color: #009bda;
+        font-size: 24px;
+        width: 24px;
+        height: 24px;
+        filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.1));
+      }
+
+      h4 {
+        margin: 0;
+        font-size: 1.1rem;
+        font-weight: 500;
+        color: #009bda;
+        text-shadow: 0 1px 1px rgba(255, 255, 255, 0.8);
+      }
+    }
+
+    .fields-container {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      background: linear-gradient(
+        to bottom,
+        white,
+        rgba(0, 155, 218, 0.02)
+      );
+    }
+  }
+}
