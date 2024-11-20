@@ -1,140 +1,58 @@
-To style a **`mat-tree`** in Angular 18 with indented labels, no expansion icons for leaf nodes, and without checkboxes, follow these steps:
+The issue of `.mat-mdc-form-field-infix` having a height greater than the `mat-mdc-form-field` height typically arises when there is extra padding or margin applied to the `infix` or `textarea` content, or if the content inside the `mat-mdc-form-field-infix` (e.g., a `textarea`) has a line-height or padding exceeding the parent container's size.
 
-### 1. HTML Template
+To fix this issue, you can adjust the styles of the `.mat-mdc-form-field-infix` or related elements like `textarea` to ensure consistency.
 
-Define your tree structure using Angular Material's `mat-tree` components:
-
-```html
-<mat-tree [dataSource]="dataSource" [treeControl]="treeControl" class="custom-tree">
-  <!-- Parent node template -->
-  <mat-tree-node *matTreeNodeDef="let node; when: hasChild" matTreeNodeToggle>
-    <div class="node-content">
-      <button mat-icon-button matTreeNodeToggle>
-        <mat-icon>
-          {{ treeControl.isExpanded(node) ? 'expand_more' : 'chevron_right' }}
-        </mat-icon>
-      </button>
-      <span>{{ node.name }}</span>
-    </div>
-  </mat-tree-node>
-
-  <!-- Leaf node template -->
-  <mat-tree-node *matTreeNodeDef="let node">
-    <div class="node-content">
-      <span>{{ node.name }}</span>
-    </div>
-  </mat-tree-node>
-</mat-tree>
-```
-
-### 2. Component TypeScript
-
-Set up your tree control and data source in the component:
-
-```typescript
-import { FlatTreeControl } from '@angular/cdk/tree';
-import { MatTreeFlatDataSource, MatTreeFlattener } from '@angular/material/tree';
-
-interface TreeNode {
-  name: string;
-  children?: TreeNode[];
-}
-
-interface FlatNode {
-  name: string;
-  level: number;
-  expandable: boolean;
-}
-
-@Component({
-  selector: 'app-custom-tree',
-  templateUrl: './custom-tree.component.html',
-  styleUrls: ['./custom-tree.component.css']
-})
-export class CustomTreeComponent {
-  private transformer = (node: TreeNode, level: number) => ({
-    name: node.name,
-    level: level,
-    expandable: !!node.children && node.children.length > 0
-  });
-
-  treeControl = new FlatTreeControl<FlatNode>(
-    node => node.level,
-    node => node.expandable
-  );
-
-  treeFlattener = new MatTreeFlattener(
-    this.transformer,
-    node => node.level,
-    node => node.expandable,
-    node => node.children
-  );
-
-  dataSource = new MatTreeFlatDataSource(this.treeControl, this.treeFlattener);
-
-  constructor() {
-    this.dataSource.data = TREE_DATA;
-  }
-
-  hasChild = (_: number, node: FlatNode) => node.expandable;
-}
-
-const TREE_DATA: TreeNode[] = [
-  {
-    name: 'Parent 1',
-    children: [
-      { name: 'Child 1' },
-      { name: 'Child 2' }
-    ]
-  },
-  {
-    name: 'Parent 2',
-    children: [
-      {
-        name: 'Child 3',
-        children: [
-          { name: 'Grandchild 1' },
-          { name: 'Grandchild 2' }
-        ]
-      }
-    ]
-  }
-];
-```
-
-### 3. CSS Styling
-
-Apply custom styles to achieve the desired appearance:
+### Solution 1: Adjust `.mat-mdc-form-field-infix` Height and Padding
+Add the following styles in your component's CSS/SCSS or global stylesheet:
 
 ```css
-.custom-tree .node-content {
-  display: flex;
-  align-items: center;
-}
-
-.custom-tree .node-content button {
-  visibility: hidden;
-}
-
-.custom-tree .mat-tree-node {
-  padding-left: 20px;
-}
-
-.custom-tree .mat-tree-node[aria-expanded='true'] > .node-content > button {
-  visibility: visible;
-}
-
-.custom-tree .mat-tree-node[aria-expanded='false'] > .node-content > button {
-  visibility: visible;
+::ng-deep .mat-mdc-form-field-infix {
+  height: 100%; /* Ensure it matches the parent height */
+  padding: 0;   /* Remove extra padding */
+  align-items: center; /* Align content vertically */
 }
 ```
 
-**Explanation:**
+### Solution 2: Control `textarea` Styling
+If the `textarea` itself is causing the overflow, adjust its line-height, padding, and margins:
 
-- **Indentation:** The `.mat-tree-node` class is targeted to apply left padding, creating the indentation effect for child nodes.
+```css
+::ng-deep mat-form-field textarea {
+  padding: 0; /* Remove extra padding */
+  line-height: 1.5; /* Adjust line height for better alignment */
+  height: auto; /* Let it scale based on rows */
+}
+```
 
-- **Expansion Icons:** The `button` elements (which contain the expansion icons) are initially hidden using `visibility: hidden`. They are then made visible only for nodes that have children (i.e., expandable nodes) by checking the `aria-expanded` attribute.
+### Solution 3: Force Alignment with Flexbox
+Ensure the `infix` content is flex-aligned properly. Angular Material uses `display: flex` for `mat-mdc-form-field-infix`, so you can align items within it:
 
-- **Checkboxes:** Since checkboxes are not included in the template, they will not appear in the tree.
+```css
+::ng-deep .mat-mdc-form-field-infix {
+  display: flex;
+  align-items: center; /* Vertically align content */
+  padding: 0 12px; /* Adjust padding as needed */
+  height: 100%; /* Match the form-field height */
+}
+```
 
-By implementing this setup, your `mat-tree` will display indented labels, omit expansion icons for leaf nodes, and exclude checkboxes, aligning with your specified requirements. 
+### Solution 4: Set a Fixed Height for `mat-mdc-form-field`
+If none of the above works due to content inconsistencies, enforce a fixed height for the entire `mat-mdc-form-field`:
+
+```css
+::ng-deep mat-form-field {
+  height: 56px; /* Adjust as per your design */
+}
+
+::ng-deep .mat-mdc-form-field-infix {
+  height: 100%; /* Match parent */
+  padding: 0; /* Remove extra padding */
+}
+```
+
+### Notes:
+1. Use `::ng-deep` if you're working with encapsulated component styles.
+2. Test the changes across all browsers to ensure consistent rendering.
+3. If you're customizing other elements like `mat-label` or `mat-icon`, ensure their height and alignment do not affect the layout.
+
+These changes should resolve the issue by ensuring that the `infix` and its children do not exceed the height of the `mat-mdc-form-field`.
