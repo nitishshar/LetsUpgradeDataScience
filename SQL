@@ -1,0 +1,90 @@
+In Snowflake, you cannot directly use **`DESCRIBE`** statements in a **`SELECT`** query or a **`WITH`** clause because **`DESCRIBE`** commands are not designed to be embedded in standard SQL queries. However, you can achieve the desired functionality through the following approaches:
+
+---
+
+### **1. Use a Temporary Table**
+Store the results of the `DESCRIBE FUNCTION` command in a temporary table, and then query the table.
+
+#### Steps:
+1. Create a temporary table:
+   ```sql
+   CREATE TEMPORARY TABLE describe_results (name STRING, type STRING);
+   ```
+
+2. Insert the results of the `DESCRIBE FUNCTION` command into the table:
+   ```sql
+   INSERT INTO describe_results
+   DESCRIBE FUNCTION MY_SCHEMA.MY_FUNCTION_NAME(ARG1, ARG2); -- Use the actual arguments
+   ```
+
+3. Query the temporary table to process the data:
+   ```sql
+   SELECT 
+       REPLACE(name, 'RETURN ', '') AS column_name, 
+       type AS column_type
+   FROM 
+       describe_results
+   WHERE 
+       name LIKE 'RETURN %';
+   ```
+
+---
+
+### **2. Use a Stored Procedure**
+A stored procedure can encapsulate the logic for executing `DESCRIBE FUNCTION` and returning the processed results.
+
+#### Example Stored Procedure:
+```sql
+CREATE OR REPLACE PROCEDURE GET_FUNCTION_COLUMNS(FUNCTION_NAME STRING, ARGUMENTS STRING)
+RETURNS TABLE (COLUMN_NAME STRING, COLUMN_TYPE STRING)
+LANGUAGE JAVASCRIPT
+AS
+$$
+    var results = [];
+    var describeStmt = snowflake.createStatement({
+        sqlText: `DESCRIBE FUNCTION ${FUNCTION_NAME} ${ARGUMENTS}`
+    });
+    var resultSet = describeStmt.execute();
+    while (resultSet.next()) {
+        var columnName = resultSet.getColumnValue('name');
+        var columnType = resultSet.getColumnValue('type');
+        if (columnName.startsWith('RETURN ')) {
+            results.push({
+                COLUMN_NAME: columnName.replace('RETURN ', ''),
+                COLUMN_TYPE: columnType
+            });
+        }
+    }
+    return results;
+$$;
+```
+
+#### Usage:
+```sql
+CALL GET_FUNCTION_COLUMNS('MY_SCHEMA.MY_FUNCTION_NAME', '(ARG1_VALUE, ARG2_VALUE)');
+```
+
+This will return the column names and types as a result set.
+
+---
+
+### **3. Use `LIMIT 0` to Inspect the Schema**
+If the function can be executed without side effects, you can call it with dummy arguments and use `LIMIT 0` to inspect the schema of the returned table dynamically.
+
+#### Example:
+```sql
+SELECT *
+FROM TABLE(MY_SCHEMA.MY_FUNCTION_NAME('arg1_value', 123))
+LIMIT 0;
+```
+
+This approach allows you to see the structure of the returned table directly in the query results.
+
+---
+
+### **Key Points**
+- **Direct `SELECT` with `DESCRIBE`** is not supported in Snowflake.
+- Use temporary tables or stored procedures to integrate `DESCRIBE FUNCTION` into workflows.
+- For on-the-fly schema inspection, execute the function with test arguments and `LIMIT 0`. 
+
+Let me know if you'd like assistance setting up one of these methods!
