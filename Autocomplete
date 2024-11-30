@@ -3,6 +3,10 @@ The cyclic dependency issue occurs because we're both injecting `NgControl` and 
 To resolve this, let’s simplify the approach by removing the explicit `NgControl` injection and using the `ControlValueAccessor` interface directly. We’ll set up `formControl` to be optionally passed as an input and, if not provided, Angular will handle the binding via `formControlName`.
 
 Here’s the adjusted code to avoid the cyclic dependency:
+function getNestedValue(obj: any, path: string): any {
+    return path.split('.').reduce((acc, key) => acc && acc[key], obj);
+}
+
 
 ### Adjusted Standalone Component Code
 
