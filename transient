@@ -1,0 +1,13 @@
+/* Remove background color for full-width rows on hover or focus */
+.ag-row.ag-full-width-row:hover,
+.ag-row.ag-full-width-row.ag-row-focus {
+  background-color: transparent !important;
+}
+
+
+/* Target row detail specifically */
+.ag-row.ag-full-width-row .ag-details-row,
+.ag-row.ag-full-width-row:hover .ag-details-row,
+.ag-row.ag-full-width-row:focus .ag-details-row {
+  background-color: transparent !important; /* Remove grey background */
+}
