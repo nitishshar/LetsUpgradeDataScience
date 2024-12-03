@@ -1,13 +1,171 @@
-/* Remove background color for full-width rows on hover or focus */
-.ag-row.ag-full-width-row:hover,
-.ag-row.ag-full-width-row.ag-row-focus {
-  background-color: transparent !important;
-}
+Here’s an Angular implementation of an **AG Grid Cell Renderer** that displays a button styled according to a status (`Draft`, `In Review`, etc.) and opens a popup when clicked.
 
+---
 
-/* Target row detail specifically */
-.ag-row.ag-full-width-row .ag-details-row,
-.ag-row.ag-full-width-row:hover .ag-details-row,
-.ag-row.ag-full-width-row:focus .ag-details-row {
-  background-color: transparent !important; /* Remove grey background */
+### Steps:
+1. **Create the Cell Renderer Component**: Use Angular CLI to generate the component.
+2. **Style the Button Dynamically**: Use `ngStyle` or conditional class bindings.
+3. **Handle the Click Event**: Use Angular’s `EventEmitter` or `window.alert()` for demonstration.
+
+---
+
+### Implementation
+
+#### 1. Generate the Cell Renderer Component
+
+```bash
+ng generate component status-button-cell-renderer
+```
+
+This creates a new component for the cell renderer.
+
+#### 2. Cell Renderer Component Code (`status-button-cell-renderer.component.ts`)
+
+```typescript
+import { Component } from '@angular/core';
+import { ICellRendererAngularComp } from 'ag-grid-angular';
+
+@Component({
+  selector: 'app-status-button-cell-renderer',
+  template: `
+    <button
+      [ngStyle]="getButtonStyle(params.value)"
+      (click)="onButtonClick()"
+      class="status-button"
+    >
+      {{ params.value }}
+    </button>
+  `,
+  styles: [
+    `
+      .status-button {
+        border: none;
+        padding: 5px 10px;
+        font-size: 14px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+    `,
+  ],
+})
+export class StatusButtonCellRendererComponent
+  implements ICellRendererAngularComp
+{
+  params: any;
+
+  // AG Grid calls this method to pass cell data
+  agInit(params: any): void {
+    this.params = params;
+  }
+
+  // Optional lifecycle hook called after grid refresh
+  refresh(params: any): boolean {
+    this.params = params;
+    return true;
+  }
+
+  // Handle button click
+  onButtonClick(): void {
+    alert(`Status: ${this.params.value}`);
+    // Replace with a modal or custom popup logic
+  }
+
+  // Style button based on the status
+  getButtonStyle(status: string): { [key: string]: string } {
+    switch (status) {
+      case 'Draft':
+        return { backgroundColor: '#f0f0f0', color: '#000' };
+      case 'In Review':
+        return { backgroundColor: '#ffcc00', color: '#fff' };
+      case 'Pending Approval':
+        return { backgroundColor: '#ff9900', color: '#fff' };
+      case 'Approved':
+        return { backgroundColor: '#4caf50', color: '#fff' };
+      case 'Rejected':
+        return { backgroundColor: '#f44336', color: '#fff' };
+      case 'Prod Deployed':
+        return { backgroundColor: '#2196f3', color: '#fff' };
+      default:
+        return { backgroundColor: '#e0e0e0', color: '#000' };
+    }
+  }
 }
+```
+
+---
+
+#### 3. Register the Cell Renderer in Your Grid
+
+In your Angular component where the AG Grid is used:
+
+##### Template (`app.component.html`)
+
+```html
+<ag-grid-angular
+  style="width: 100%; height: 500px"
+  class="ag-theme-alpine"
+  [rowData]="rowData"
+  [columnDefs]="columnDefs"
+  [frameworkComponents]="frameworkComponents"
+></ag-grid-angular>
+```
+
+##### Component (`app.component.ts`)
+
+```typescript
+import { Component } from '@angular/core';
+import { StatusButtonCellRendererComponent } from './status-button-cell-renderer/status-button-cell-renderer.component';
+
+@Component({
+  selector: 'app-root',
+  templateUrl: './app.component.html',
+  styleUrls: ['./app.component.css'],
+})
+export class AppComponent {
+  columnDefs = [
+    { field: 'id', headerName: 'ID' },
+    { field: 'name', headerName: 'Name' },
+    {
+      field: 'status',
+      headerName: 'Status',
+      cellRenderer: 'statusButtonCellRenderer', // Reference the cell renderer
+    },
+  ];
+
+  rowData = [
+    { id: 1, name: 'Task 1', status: 'Draft' },
+    { id: 2, name: 'Task 2', status: 'In Review' },
+    { id: 3, name: 'Task 3', status: 'Pending Approval' },
+    { id: 4, name: 'Task 4', status: 'Approved' },
+    { id: 5, name: 'Task 5', status: 'Rejected' },
+    { id: 6, name: 'Task 6', status: 'Prod Deployed' },
+  ];
+
+  frameworkComponents = {
+    statusButtonCellRenderer: StatusButtonCellRendererComponent,
+  };
+}
+```
+
+---
+
+#### 4. Add AG Grid Styles
+
+Include AG Grid CSS in your `angular.json`:
+
+```json
+"styles": [
+  "src/styles.css",
+  "node_modules/ag-grid-community/styles/ag-grid.css",
+  "node_modules/ag-grid-community/styles/ag-theme-alpine.css"
+],
+```
+
+---
+
+### Output
+
+- **Button Appearance**: Buttons styled based on the `status` value.
+- **Click Behavior**: Displays an alert with the status value when clicked.
+
+You can replace the `alert` with a modal dialog or a custom popup implementation for a more sophisticated UI.
