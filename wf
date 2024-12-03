@@ -14,6 +14,12 @@ interface WorkflowData {
 })
 export class WorkflowStateDialogComponent {
   workflowForm: FormGroup;
+ guidelines: string[] = [
+    'Ensure all required fields are filled.',
+    'Review all comments and feedback.',
+    'Verify dependencies are resolved.',
+    'Check for any pending approvals.'
+  ];
   states = {
     Draft: ['In Review'],
     'In Review': ['Pending Approvals', 'Approved', 'Rejected'],
@@ -52,6 +58,10 @@ export class WorkflowStateDialogComponent {
 <h2 mat-dialog-title>Change Workflow State</h2>
 <form [formGroup]="workflowForm" (ngSubmit)="onSubmit()">
   <mat-dialog-content>
+<h3>Guidelines</h3>
+    <ul>
+      <li *ngFor="let guideline of guidelines">{{ guideline }}</li>
+    </ul>
     <mat-form-field appearance="fill">
       <mat-label>New State</mat-label>
       <mat-select formControlName="newState">
@@ -76,6 +86,7 @@ export class WorkflowStateDialogComponent {
 
 
 /* src/app/components/workflow-state-dialog/workflow-state-dialog.component.scss */
+/* src/app/components/workflow-state-dialog/workflow-state-dialog.component.scss */
 mat-form-field {
   width: 100%;
 }
@@ -86,6 +97,15 @@ mat-dialog-content {
   gap: 16px;
 }
 
+h3 {
+  margin-bottom: 8px;
+}
+
+ul {
+  margin: 0 0 16px 0;
+  padding-left: 20px;
+  list-style-type: disc;
+}
 
 
 // Example usage in another component
