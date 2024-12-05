@@ -78,3 +78,15 @@ SWITCH(
     SELECTEDVALUE('DateSlicerTable'[DateColumn]) = "Prior Date", PriorDate,
     SELECTEDVALUE('DateSlicerTable'[DateColumn]) -- Default to selected value
 )
+
+DisplayName = 
+IF(
+    'YourTable'[DateColumn] = 
+    CALCULATE(
+        MAX('YourTable'[DateColumn]),
+        ALLEXCEPT('YourTable', 'YourTable'[GroupColumn1], 'YourTable'[GroupColumn2])
+    ),
+    "Current Date",
+    BLANK()
+)
+
