@@ -8,3 +8,20 @@ DISTINCT(UNION(
 ))
 IsLatestDate = 
 IF('YourTable'[DateColumn] = MAX('YourTable'[DateColumn]), TRUE, FALSE)
+DateSlicerTable = 
+UNION(
+    SELECTCOLUMNS(
+        'YourTable',
+        "DateColumn", 'YourTable'[DateColumn]
+    ),
+    DATATABLE(
+        "DateColumn", STRING,
+        {{"Current Date"}}
+    )
+)
+SelectedDate = 
+IF(
+    SELECTEDVALUE('DateSlicerTable'[DateColumn]) = "Current Date",
+    MAX('YourTable'[DateColumn]),
+    SELECTEDVALUE('DateSlicerTable'[DateColumn])
+)
