@@ -25,3 +25,27 @@ IF(
     MAX('YourTable'[DateColumn]),
     SELECTEDVALUE('DateSlicerTable'[DateColumn])
 )
+DateSlicerTable = 
+UNION(
+    SELECTCOLUMNS(
+        'YourTable',
+        "DateColumn", 'YourTable'[DateColumn]
+    ),
+    DATATABLE(
+        "DateColumn", STRING,
+        {{"Current Date"}, {"Prior Date"}}
+    )
+)
+LatestDate = MAX('YourTable'[DateColumn])
+PriorDate = 
+CALCULATE(
+    MAX('YourTable'[DateColumn]),
+    'YourTable'[DateColumn] < MAX('YourTable'[DateColumn])
+)
+SelectedDate = 
+SWITCH(
+    TRUE(),
+    SELECTEDVALUE('DateSlicerTable'[DateColumn]) = "Current Date", [LatestDate],
+    SELECTEDVALUE('DateSlicerTable'[DateColumn]) = "Prior Date", [PriorDate],
+    SELECTEDVALUE('DateSlicerTable'[DateColumn])
+)
