@@ -1,0 +1,10 @@
+SlicerDates = 
+DISTINCT(UNION(
+    SELECTCOLUMNS('YourTable', "DateColumn", 'YourTable'[DateColumn]),
+    SELECTCOLUMNS(
+        FILTER(ALL('YourTable'), 'YourTable'[DateColumn] = MAX('YourTable'[DateColumn])),
+        "DateColumn", 'YourTable'[DateColumn]
+    )
+))
+IsLatestDate = 
+IF('YourTable'[DateColumn] = MAX('YourTable'[DateColumn]), TRUE, FALSE)
