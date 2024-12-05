@@ -63,3 +63,18 @@ SWITCH(
         ),
     SELECTEDVALUE('DateSlicerTable'[DateColumn]) -- Default to selected date
 )
+
+SelectedDate = 
+VAR CurrentDate = MAX('YourTable'[DateColumn])
+VAR PriorDate = 
+    CALCULATE(
+        MAX('YourTable'[DateColumn]),
+        'YourTable'[DateColumn] < CurrentDate
+    )
+RETURN
+SWITCH(
+    TRUE(),
+    SELECTEDVALUE('DateSlicerTable'[DateColumn]) = "Current Date", CurrentDate,
+    SELECTEDVALUE('DateSlicerTable'[DateColumn]) = "Prior Date", PriorDate,
+    SELECTEDVALUE('DateSlicerTable'[DateColumn]) -- Default to selected value
+)
