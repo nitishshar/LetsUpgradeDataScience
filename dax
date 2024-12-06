@@ -113,3 +113,29 @@ Var _maxdate=CALCULATE(MAX('Table'[Date]),ALL('Table'))
 Return
 IF(SELECTEDVALUE('Slicer'[Date])=BLANK(),_maxdate,SELECTEDVALUE(Slicer[Date]))
 Measure 2 = IF(SELECTEDVALUE('Table'[Date])=[Measure],1,0)
+
+
+Date Table with Labels = 
+VAR RankedDates =
+    ADDCOLUMNS(
+        SUMMARIZE(
+            'YourTable',
+            'YourTable'[REPORTING_DATE]
+        ),
+        "Rank", RANKX(
+            ALL('YourTable'[REPORTING_DATE]),
+            'YourTable'[REPORTING_DATE],
+            , DESC
+        )
+    )
+RETURN
+    ADDCOLUMNS(
+        RankedDates,
+        "DISPLAY_DATE", 
+        SWITCH(
+            TRUE(),
+            [Rank] = 1, "Current Date",
+            [Rank] = 2, "Prior Date",
+            FORMAT('YourTable'[REPORTING_DATE], "YYYY-MM-DD") -- Use the date for other rows
+        )
+    )
