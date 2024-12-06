@@ -139,3 +139,25 @@ RETURN
             FORMAT('YourTable'[REPORTING_DATE], "YYYY-MM-DD") -- Use the date for other rows
         )
     )
+
+Selected Reporting Date = 
+VAR SelectedDisplayDate = SELECTEDVALUE('Date Table'[DISPLAY_DATE])
+RETURN
+    SWITCH(
+        TRUE(),
+        SelectedDisplayDate = "Current Date", 
+            CALCULATE(
+                MAX('Date Table'[REPORTING_DATE]),
+                'Date Table'[DISPLAY_DATE] = "Current Date"
+            ),
+        SelectedDisplayDate = "Prior Date", 
+            CALCULATE(
+                MAX('Date Table'[REPORTING_DATE]),
+                'Date Table'[DISPLAY_DATE] = "Prior Date"
+            ),
+        CALCULATE(
+            MAX('Date Table'[REPORTING_DATE]),
+            'Date Table'[DISPLAY_DATE] = SelectedDisplayDate
+        )
+    )
+
