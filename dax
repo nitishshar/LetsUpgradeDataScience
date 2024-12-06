@@ -105,4 +105,11 @@ RETURN
         BLANK()
     )
 
+Slicer = VALUES('Table'[Date])
+ Measure:
 
+Measure = 
+Var _maxdate=CALCULATE(MAX('Table'[Date]),ALL('Table'))
+Return
+IF(SELECTEDVALUE('Slicer'[Date])=BLANK(),_maxdate,SELECTEDVALUE(Slicer[Date]))
+Measure 2 = IF(SELECTEDVALUE('Table'[Date])=[Measure],1,0)
