@@ -90,3 +90,19 @@ IF(
     BLANK()
 )
 
+Selected Current Date = 
+VAR SelectedDisplay = SELECTEDVALUE('YourTable'[DATE_DISPLAY])
+RETURN
+    IF(
+        SelectedDisplay = "Current Date",
+        MAXX(
+            FILTER(
+                'YourTable',
+                'YourTable'[DATE_DISPLAY] = "Current Date"
+            ),
+            'YourTable'[ActualDateColumn] -- Replace with the actual date column name
+        ),
+        BLANK()
+    )
+
+
