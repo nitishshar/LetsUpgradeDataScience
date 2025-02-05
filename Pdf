@@ -1,0 +1,56 @@
+import PyPDF2
+from PIL import Image
+from pytesseract import image_to_string
+from io import BytesIO
+
+def extract_images_from_pdf(pdf_reader):
+    images = []
+    for page_number in range(len(pdf_reader.pages)):
+        page = pdf_reader.pages[page_number]
+        if '/XObject' in page.get('/Resources', {}):
+            x_objects = page['/Resources']['/XObject'].get_object()
+            for obj in x_objects:
+                if x_objects[obj]['/Subtype'] == '/Image':
+                    image_data = x_objects[obj].get_data()
+                    size = (x_objects[obj]['/Width'], x_objects[obj]['/Height'])
+                    mode = 'RGB' if x_objects[obj]['/ColorSpace'] == '/DeviceRGB' else 'P'
+
+                    # Convert image data to PIL image
+                    image = Image.frombytes(mode, size, image_data)
+                    images.append(image)
+    return images
+
+def extract_text_from_pdf_without_poppler(pdf_path):
+    text_content = ""
+
+    try:
+        # Open the PDF file
+        with open(pdf_path, "rb") as pdf_file:
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+
+            # Step 1: Extract text using PyPDF2
+            for page in pdf_reader.pages:
+                text_content += page.extract_text() or ""
+
+            # Step 2: Extract images and perform OCR on them
+            images = extract_images_from_pdf(pdf_reader)
+            for image in images:
+                text_from_image = image_to_string(image)
+                text_content += f"\n--- OCR Text from Image ---\n{text_from_image}"
+    
+    except Exception as e:
+        print(f"Error extracting text: {e}")
+
+    return text_content
+
+# Path to your PDF file
+pdf_file_path = "path/to/your/pdf_file.pdf"
+
+# Extract text from the PDF
+extracted_text = extract_text_from_pdf_without_poppler(pdf_file_path)
+
+# Save or print the extracted text
+with open("extracted_text.txt", "w", encoding="utf-8") as text_file:
+    text_file.write(extracted_text)
+
+print("Text extraction completed. Check 'extracted_text.txt' for the output.")
