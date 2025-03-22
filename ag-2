@@ -1,0 +1,257 @@
+// Example raw data (array of arrays)
+const rawData = [
+  ["Info Row 1", "Some information", "..."],
+  ["Info Row 2", "More information", "..."],
+  // Actual data starts here
+  ["Parent Item", "value2", "value3", "value4"],
+  ["  Child Item 1", "value6", "value7", "value8"],  // Notice the spacing to indicate hierarchy
+  ["  Child Item 2", "value9", "value10", "value11"],
+  ["Another Parent", "value12", "value13", "value14"],
+  ["  Another Child", "value15", "value16", "value17"],
+  ["    Grandchild", "value18", "value19", "value20"],  // Even more spacing for deeper level
+  // ... more rows
+];
+
+// Configuration
+const config = {
+  skipRows: 2, // Number of info rows to skip
+  hierarchyColumnIndex: 0, // Index of the column that should display hierarchy
+  hierarchyDetectionMethod: 'leadingSpaces' // Method to detect hierarchy: 'leadingSpaces', 'prefix', 'explicit'
+};
+
+// Column definitions with grouping support
+const columnDefinitions = [
+  // Regular column that will show hierarchy
+  { 
+    field: 'name', 
+    headerName: 'Name',
+    index: 0,
+    cellRenderer: params => {
+      // Display hierarchy using appropriate padding based on level
+      const level = params.data.hierarchyLevel || 0;
+      const padding = level * 20; // 20px per level
+      return `<span style="padding-left: ${padding}px">${params.value}</span>`;
+    }
+  },
+  
+  // Group 1: Basic Information
+  { 
+    headerName: 'Basic Information',
+    children: [
+      { field: 'column1', headerName: 'Column 1', index: 1 },
+      { field: 'column2', headerName: 'Column 2', index: 2 }
+    ]
+  },
+  
+  // Group 2: Additional Details
+  {
+    headerName: 'Additional Details',
+    children: [
+      { field: 'column3', headerName: 'Column 3', index: 3 },
+      { field: 'column4', headerName: 'Column 4', index: 4 }
+    ]
+  }
+];
+
+// Function to flatten column definitions for data mapping
+function flattenColumnDefinitions(columnDefs) {
+  const flatColumns = [];
+  
+  columnDefs.forEach(col => {
+    if (col.children) {
+      flatColumns.push(...flattenColumnDefinitions(col.children));
+    } else {
+      flatColumns.push(col);
+    }
+  });
+  
+  return flatColumns;
+}
+
+// Function to detect hierarchy level based on the configuration
+function detectHierarchyLevel(value, method) {
+  if (!value) return 0;
+  
+  switch (method) {
+    case 'leadingSpaces':
+      // Count leading spaces and divide by 2 to get level
+      const match = value.match(/^(\s*)/);
+      return match ? match[0].length / 2 : 0;
+      
+    case 'prefix':
+      // Detect by prefix like "- ", "-- ", etc.
+      const prefixMatch = value.match(/^(-+)\s/);
+      return prefixMatch ? prefixMatch[1].length : 0;
+      
+    case 'explicit':
+      // For explicit hierarchy markers like "[L2]" at the beginning
+      const levelMatch = value.match(/^\[L(\d+)\]/);
+      return levelMatch ? parseInt(levelMatch[1], 10) : 0;
+      
+    default:
+      return 0;
+  }
+}
+
+// Function to clean hierarchy markers from the display value
+function cleanHierarchyMarkers(value, method) {
+  if (!value) return value;
+  
+  switch (method) {
+    case 'leadingSpaces':
+      return value.trimStart();
+      
+    case 'prefix':
+      return value.replace(/^(-+)\s/, '');
+      
+    case 'explicit':
+      return value.replace(/^\[L\d+\]\s*/, '');
+      
+    default:
+      return value;
+  }
+}
+
+// Function to transform array data into objects with hierarchy information
+function transformArrayToObjects(rawData, columnMapping, config) {
+  const transformedData = [];
+  const flatColumns = flattenColumnDefinitions(columnMapping);
+  const skipRows = config.skipRows || 0;
+  const hierarchyIndex = config.hierarchyColumnIndex || 0;
+  const hierarchyMethod = config.hierarchyDetectionMethod || 'leadingSpaces';
+  
+  // Skip info rows and process only data rows
+  for (let i = skipRows; i < rawData.length; i++) {
+    const row = rawData[i];
+    const rowObj = {};
+    
+    // Detect hierarchy level for this row
+    const hierarchyValue = row[hierarchyIndex];
+    const hierarchyLevel = detectHierarchyLevel(hierarchyValue, hierarchyMethod);
+    
+    // Add hierarchy level to the row object
+    rowObj.hierarchyLevel = hierarchyLevel;
+    
+    // Map each value to its corresponding field
+    flatColumns.forEach(column => {
+      if (column.index !== undefined && column.index < row.length) {
+        let value = row[column.index];
+        
+        // Clean hierarchy markers from the display value for the hierarchy column
+        if (column.index === hierarchyIndex) {
+          value = cleanHierarchyMarkers(value, hierarchyMethod);
+        }
+        
+        rowObj[column.field] = value;
+      }
+    });
+    
+    transformedData.push(rowObj);
+  }
+  
+  return transformedData;
+}
+
+// Function to create ag-Grid column definitions
+function createAgGridColumnDefs(columnDefinitions) {
+  return columnDefinitions.map(col => {
+    const columnDef = { ...col };
+    
+    // Handle grouped columns
+    if (col.children) {
+      columnDef.children = createAgGridColumnDefs(col.children);
+    }
+    
+    // Remove the index property as ag-Grid doesn't need it
+    delete columnDef.index;
+    
+    return columnDef;
+  });
+}
+
+// Set up AG Grid
+document.addEventListener('DOMContentLoaded', function() {
+  // Transform the data
+  const rowData = transformArrayToObjects(rawData, columnDefinitions, config);
+  
+  // Create ag-Grid column definitions
+  const agGridColumnDefs = createAgGridColumnDefs(columnDefinitions);
+  
+  const gridOptions = {
+    // Column definitions with grouping
+    columnDefs: agGridColumnDefs,
+    
+    // Transformed row data
+    rowData: rowData,
+    
+    // Default column options
+    defaultColDef: {
+      flex: 1,
+      minWidth: 100,
+      filter: true,
+      sortable: true,
+      resizable: true
+    },
+    
+    // Optional: Row styling based on hierarchy level
+    getRowStyle: params => {
+      // You can return specific styles based on hierarchy level
+      const level = params.data.hierarchyLevel || 0;
+      
+      if (level === 0) {
+        return { fontWeight: 'bold', backgroundColor: '#f5f5f5' };
+      } else if (level === 1) {
+        return { backgroundColor: '#ffffff' };
+      } else if (level >= 2) {
+        return { backgroundColor: '#f9f9f9', fontStyle: 'italic' };
+      }
+      
+      return null;
+    }
+  };
+
+  // Initialize the grid
+  const gridDiv = document.querySelector('#myGrid');
+  new agGrid.Grid(gridDiv, gridOptions);
+});
+
+// Example usage with a different hierarchy detection method
+/*
+const alternativeConfig = {
+  skipRows: 2,
+  hierarchyColumnIndex: 0,
+  hierarchyDetectionMethod: 'prefix' // Using prefixes like "- ", "-- ", etc.
+};
+
+// With this config, your data might look like:
+const alternativeData = [
+  ["Info Row 1", "Some info"],
+  ["Info Row 2", "More info"],
+  ["Parent Item", "value1"],
+  ["- Child Item 1", "value2"],
+  ["- Child Item 2", "value3"],
+  ["-- Grandchild", "value4"]
+];
+*/
+
+// Example HTML setup
+/*
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AG Grid Example with Visual Hierarchy</title>
+    <script src="https://unpkg.com/ag-grid-community/dist/ag-grid-community.min.js"></script>
+    <script src="https://unpkg.com/ag-grid-enterprise/dist/ag-grid-enterprise.min.js"></script>
+    <style>
+        #myGrid {
+            height: 500px;
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div id="myGrid" class="ag-theme-alpine"></div>
+    <script src="your-script.js"></script>
+</body>
+</html>
+*/
