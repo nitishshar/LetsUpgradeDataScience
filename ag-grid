@@ -1,0 +1,128 @@
+// Assuming you have your data like this
+const rawData = [
+  ["Info Row 1", "Some information", "..."],
+  ["Info Row 2", "More information", "..."],
+  // Actual data starts here
+  ["value1", "value2", "value3", "value4"],
+  ["value5", "value6", "value7", "value8"],
+  // ... more rows
+];
+
+// Your column definitions (field names and their corresponding index in each row array)
+const columnMapping = [
+  { field: 'column1', index: 0 },
+  { field: 'column2', index: 1 },
+  { field: 'column3', index: 2 },
+  { field: 'column4', index: 3 },
+  // ... more columns
+];
+
+// Function to transform array data into objects
+function transformArrayToObjects(rawData, columnMapping, startRowIndex = 2) {
+  const transformedData = [];
+  
+  // Skip info rows and process only data rows
+  for (let i = startRowIndex; i < rawData.length; i++) {
+    const row = rawData[i];
+    const rowObj = {};
+    
+    // Map each value to its corresponding field
+    columnMapping.forEach(column => {
+      rowObj[column.field] = row[column.index];
+    });
+    
+    transformedData.push(rowObj);
+  }
+  
+  return transformedData;
+}
+
+// Transform the data
+const rowData = transformArrayToObjects(rawData, columnMapping);
+
+// Set up AG Grid
+document.addEventListener('DOMContentLoaded', function() {
+  const gridOptions = {
+    // Column definitions based on your mapping
+    columnDefs: columnMapping.map(col => ({ 
+      field: col.field,
+      // You can add more properties for each column as needed
+      // width, filter, sortable, etc.
+    })),
+    
+    // Transformed row data
+    rowData: rowData,
+    
+    // Other AG Grid options
+    defaultColDef: {
+      flex: 1,
+      minWidth: 100,
+      filter: true,
+      sortable: true,
+      resizable: true
+    },
+    
+    // Optional: Auto-detect field types
+    autoGroupColumnDef: {
+      minWidth: 200,
+    },
+    
+    // Optional: Enable enterprise features if you have them
+    // enableRangeSelection: true,
+    // enableCharts: true,
+  };
+
+  // Initialize the grid
+  const gridDiv = document.querySelector('#myGrid');
+  new agGrid.Grid(gridDiv, gridOptions);
+});
+
+// If you need to dynamically update the column definitions based on data types
+function inferColumnTypes(rowData, columnDefs) {
+  const updatedColumnDefs = [...columnDefs];
+  
+  // Check the first few rows to infer data types
+  const sampleSize = Math.min(10, rowData.length);
+  
+  updatedColumnDefs.forEach(colDef => {
+    const values = rowData.slice(0, sampleSize).map(row => row[colDef.field]);
+    
+    // Check if values are numbers
+    const isNumber = values.every(val => !isNaN(Number(val)) && val !== '');
+    if (isNumber) {
+      colDef.type = 'numericColumn';
+      colDef.filter = 'agNumberColumnFilter';
+    }
+    
+    // Check if values are dates
+    const datePattern = /^\d{4}-\d{2}-\d{2}|^\d{2}\/\d{2}\/\d{4}/;
+    const isDate = values.some(val => val && typeof val === 'string' && datePattern.test(val));
+    if (isDate) {
+      colDef.type = 'dateColumn';
+      colDef.filter = 'agDateColumnFilter';
+    }
+  });
+  
+  return updatedColumnDefs;
+}
+
+// Example HTML setup
+/*
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AG Grid Example</title>
+    <script src="https://unpkg.com/ag-grid-community/dist/ag-grid-community.min.js"></script>
+    <style>
+        #myGrid {
+            height: 500px;
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div id="myGrid" class="ag-theme-alpine"></div>
+    <script src="your-script.js"></script>
+</body>
+</html>
+*/
