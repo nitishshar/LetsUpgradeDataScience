@@ -1,0 +1,18 @@
+    const nonBlankValues = [
+      ...new Set(
+        this.rowData
+          .map(row => row.name)
+          .filter(value => 
+            value !== null && 
+            value !== undefined && 
+            value.toString().trim() !== ''
+          )
+      )
+    ];
+
+    // Set the filter model
+    filterInstance.setModel({
+      type: 'set',
+      values: nonBlankValues,
+      filterType: 'set'
+    });
