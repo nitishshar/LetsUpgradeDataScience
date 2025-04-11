@@ -255,3 +255,30 @@ const alternativeData = [
 </body>
 </html>
 */
+
+
+// Function to update column configuration to show one dimension outside row group
+function showDimensionOutsideRowGroup(columnField) {
+  // Get current column definitions
+  const columnDefs = gridApi.getColumnDefs();
+  
+  // Reset all rowGroup columns to be hidden
+  columnDefs.forEach(colDef => {
+    if (colDef.rowGroup) {
+      colDef.hide = true;
+    }
+  });
+  
+  // Find the specific column we want to show separately
+  const targetColumn = columnDefs.find(colDef => colDef.field === columnField);
+  if (targetColumn) {
+    targetColumn.hide = false; // Make this specific column visible
+  }
+  
+  // Apply the updated column definitions
+  gridApi.setColumnDefs(columnDefs);
+}
+
+// Example usage:
+// showDimensionOutsideRowGroup('country'); // To show country column outside row group
+// showDimensionOutsideRowGroup('year');    // Later, to switch to year instead
