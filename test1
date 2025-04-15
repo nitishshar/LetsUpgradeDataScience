@@ -1,0 +1,19 @@
+.options-button {
+       width: 24px;
+       height: 36px;
+       background-color: #f0f0f0;
+       border: 1px solid #ccc;
+       border-radius: 4px;
+       display: flex;
+       align-items: center;
+       justify-content: center;
+       cursor: pointer;
+       
+       &:hover {
+         background-color: #e0e0e0;
+       }
+       
+       .options-icon {
+         font-size: 14px;
+         color: #333;
+       }
