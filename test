@@ -16,3 +16,66 @@
       values: nonBlankValues,
       filterType: 'set'
     });
+
+
+const columnDefs = [
+  { field: 'month', enableRowGroup: true, enablePivot: true },
+  { field: 'year', enableRowGroup: true, enablePivot: true },
+  { field: 'impacted', enableRowGroup: true },
+  { 
+    headerName: 'Headcount (Impacted)',
+    field: 'headcountImpacted',
+    enableValue: true,
+    valueGetter: params => {
+      return params.data && params.data.impacted ? params.data.headcount : null;
+    },
+    aggFunc: params => {
+      // Get the current row group columns
+      const rowGroupCols = params.columnApi.getRowGroupColumns();
+      // Check if month is in the row group
+      const monthInRowGroup = rowGroupCols.some(col => col.colId === 'month');
+      
+      // Filter out null values
+      const filteredValues = params.values.filter(value => value !== null);
+      
+      if (filteredValues.length === 0) return null;
+      
+      if (monthInRowGroup) {
+        // When month is visible, show raw values
+        return filteredValues;
+      } else {
+        // When only year is visible, calculate average
+        const sum = filteredValues.reduce((total, value) => total + value, 0);
+        return sum / filteredValues.length;
+      }
+    }
+  },
+  { 
+    headerName: 'Amount (Impacted)',
+    field: 'amountImpacted',
+    enableValue: true,
+    valueGetter: params => {
+      return params.data && params.data.impacted ? params.data.amount : null;
+    },
+    aggFunc: params => {
+      // Get the current row group columns
+      const rowGroupCols = params.columnApi.getRowGroupColumns();
+      // Check if month is in the row group
+      const monthInRowGroup = rowGroupCols.some(col => col.colId === 'month');
+      
+      // Filter out null values
+      const filteredValues = params.values.filter(value => value !== null);
+      
+      if (filteredValues.length === 0) return null;
+      
+      if (monthInRowGroup) {
+        // When month is visible, show raw values
+        return filteredValues;
+      } else {
+        // When only year is visible, calculate average
+        const sum = filteredValues.reduce((total, value) => total + value, 0);
+        return sum / filteredValues.length;
+      }
+    }
+  }
+];
