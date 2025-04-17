@@ -1,0 +1,159 @@
+// app.component.ts
+import { Component, OnInit, ViewChild } from '@angular/core';
+import { AgGridAngular } from 'ag-grid-angular';
+import { 
+  ColDef, 
+  GridReadyEvent, 
+  ExcelExportParams,
+  ExcelStyle,
+  ExcelCell,
+  GridApi
+} from 'ag-grid-community';
+
+@Component({
+  selector: 'app-root',
+  templateUrl: './app.component.html',
+  styleUrls: ['./app.component.css']
+})
+export class AppComponent implements OnInit {
+  @ViewChild('agGrid') agGrid!: AgGridAngular;
+
+  // Column Definitions
+  public columnDefs: ColDef[] = [
+    { field: 'name', headerName: 'Name', width: 150 },
+    { field: 'age', headerName: 'Age', width: 90 },
+    { field: 'country', headerName: 'Country', width: 150 },
+    { 
+      field: 'salary', 
+      headerName: 'Salary', 
+      width: 150, 
+      cellStyle: params => params.value > 50000 ? { backgroundColor: '#d8f0d8', color: '#008000' } : {},
+      cellClassRules: {
+        'high-salary': params => params.value > 50000
+      }
+    },
+    { field: 'department', headerName: 'Department', width: 150 }
+  ];
+
+  // Default ColDef
+  public defaultColDef: ColDef = {
+    sortable: true,
+    filter: true,
+    resizable: true
+  };
+
+  // Multiple datasets for different sheets
+  public employeeData = [
+    { name: 'John Doe', age: 30, country: 'USA', salary: 65000, department: 'Engineering' },
+    { name: 'Jane Smith', age: 28, country: 'Canada', salary: 48000, department: 'Marketing' },
+    { name: 'Bob Johnson', age: 45, country: 'UK', salary: 72000, department: 'Engineering' },
+    { name: 'Alice Williams', age: 33, country: 'Germany', salary: 51000, department: 'Sales' },
+    { name: 'Carlos Rodriguez', age: 29, country: 'Spain', salary: 42000, department: 'Marketing' }
+  ];
+
+  public salesData = [
+    { name: 'Product A', age: 2, country: 'USA', salary: 15000, department: 'Electronics' },
+    { name: 'Product B', age: 1, country: 'Global', salary: 28000, department: 'Home Goods' },
+    { name: 'Product C', age: 3, country: 'EU', salary: 32000, department: 'Electronics' },
+    { name: 'Product D', age: 1, country: 'Asia', salary: 11000, department: 'Accessories' },
+    { name: 'Product E', age: 2, country: 'USA', salary: 22000, department: 'Home Goods' }
+  ];
+
+  public financialData = [
+    { name: 'Q1 Report', age: 2023, country: 'Global', salary: 150000, department: 'Finance' },
+    { name: 'Q2 Report', age: 2023, country: 'Global', salary: 180000, department: 'Finance' },
+    { name: 'Q3 Report', age: 2023, country: 'Global', salary: 130000, department: 'Finance' },
+    { name: 'Q4 Report', age: 2023, country: 'Global', salary: 210000, department: 'Finance' }
+  ];
+
+  // Current data displayed in the grid
+  public rowData = this.employeeData;
+
+  // Excel Styles
+  private excelStyles: ExcelStyle[] = [
+    {
+      id: 'header',
+      font: { bold: true, color: '#FFFFFF' },
+      interior: { color: '#4472C4', pattern: 'Solid' },
+      alignment: { horizontal: 'Center' }
+    },
+    {
+      id: 'high-salary',
+      font: { color: '#008000' },
+      interior: { color: '#D8F0D8', pattern: 'Solid' }
+    }
+  ];
+
+  constructor() {}
+
+  ngOnInit() {}
+
+  // Switch displayed data
+  setGridData(dataset: string) {
+    switch(dataset) {
+      case 'employees':
+        this.rowData = this.employeeData;
+        break;
+      case 'sales':
+        this.rowData = this.salesData;
+        break;
+      case 'financial':
+        this.rowData = this.financialData;
+        break;
+    }
+  }
+
+  // Export to Excel with multiple sheets
+  exportMultipleSheets() {
+    // We need to create a temporary grid for each dataset we want to export
+    // This is because AG Grid's export works with the current grid state
+
+    // First, create the workbook with the first sheet using the current grid
+    const params: ExcelExportParams = {
+      fileName: 'multi-sheet-export.xlsx',
+      sheetName: 'Employees',
+      styles: this.excelStyles,
+      processHeaderCallback: (params: ExcelCell): string => {
+        params.styleId = 'header';
+        return params.value || '';
+      }
+    };
+
+    // Start the export with the first sheet
+    this.agGrid.api.exportDataAsExcel(params);
+
+    // Now add additional sheets using the same workbook context
+    this.addSheetToExport('Sales', this.salesData);
+    this.addSheetToExport('Financial', this.financialData);
+  }
+
+  // Helper method to add a sheet to the current export
+  private addSheetToExport(sheetName: string, data: any[]) {
+    // Create a configuration that tells AG Grid to append to the existing workbook
+    const appendParams: ExcelExportParams = {
+      sheetName: sheetName,
+      styles: this.excelStyles,
+      processHeaderCallback: (params: ExcelCell): string => {
+        params.styleId = 'header';
+        return params.value || '';
+      },
+      // Important: this tells AG Grid to append to the existing workbook
+      // instead of creating a new one
+      appendContent: true
+    };
+
+    // Temporarily set the grid data to the new dataset
+    const tempData = [...this.rowData]; // Save current data
+    this.agGrid.api.setRowData(data);
+    
+    // Export the data to a new sheet in the existing workbook
+    this.agGrid.api.exportDataAsExcel(appendParams);
+    
+    // Restore the original data
+    this.agGrid.api.setRowData(tempData);
+  }
+
+  onGridReady(params: GridReadyEvent) {
+    // Any initialization code here
+  }
+}
