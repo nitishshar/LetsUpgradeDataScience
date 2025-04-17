@@ -1,0 +1,166 @@
+export multiple sheets
+
+// app.component.ts
+import { Component, OnInit, ViewChild } from '@angular/core';
+import { AgGridAngular } from 'ag-grid-angular';
+import { 
+  ColDef, 
+  GridReadyEvent, 
+  ExcelExportParams,
+  ExcelStyle,
+  ExcelCell,
+  GridApi
+} from 'ag-grid-community';
+
+@Component({
+  selector: 'app-root',
+  templateUrl: './app.component.html',
+  styleUrls: ['./app.component.css']
+})
+export class AppComponent implements OnInit {
+  @ViewChild('agGrid') agGrid!: AgGridAngular;
+  private originalData: any[] = [];
+
+  // Column Definitions
+  public columnDefs: ColDef[] = [
+    { field: 'country', headerName: 'Country', rowGroup: true, enableRowGroup: true },
+    { field: 'year', headerName: 'Year', pivot: true, enablePivot: true },
+    { field: 'sport', headerName: 'Sport', rowGroup: true, enableRowGroup: true },
+    { field: 'athlete', headerName: 'Athlete' },
+    { 
+      field: 'gold', 
+      headerName: 'Gold', 
+      aggFunc: 'sum',
+      enableValue: true,
+      cellClassRules: {
+        'high-value': params => params.value > 2
+      }
+    },
+    { field: 'silver', headerName: 'Silver', aggFunc: 'sum', enableValue: true },
+    { field: 'bronze', headerName: 'Bronze', aggFunc: 'sum', enableValue: true }
+  ];
+
+  // Default ColDef
+  public defaultColDef: ColDef = {
+    sortable: true,
+    filter: true,
+    resizable: true,
+    flex: 1
+  };
+
+  // Row Data
+  public rowData = [
+    { country: 'USA', year: 2020, sport: 'Swimming', athlete: 'Michael Phelps', gold: 4, silver: 2, bronze: 0 },
+    { country: 'USA', year: 2020, sport: 'Swimming', athlete: 'Katie Ledecky', gold: 3, silver: 1, bronze: 1 },
+    { country: 'USA', year: 2020, sport: 'Athletics', athlete: 'Allyson Felix', gold: 2, silver: 3, bronze: 1 },
+    { country: 'Japan', year: 2020, sport: 'Swimming', athlete: 'Kosuke Hagino', gold: 1, silver: 1, bronze: 3 },
+    { country: 'Japan', year: 2020, sport: 'Athletics', athlete: 'Hitomi Niiya', gold: 0, silver: 2, bronze: 1 },
+    { country: 'USA', year: 2016, sport: 'Swimming', athlete: 'Michael Phelps', gold: 5, silver: 1, bronze: 0 },
+    { country: 'USA', year: 2016, sport: 'Athletics', athlete: 'Allyson Felix', gold: 2, silver: 2, bronze: 0 },
+    { country: 'Japan', year: 2016, sport: 'Swimming', athlete: 'Kosuke Hagino', gold: 1, silver: 2, bronze: 1 }
+  ];
+
+  // Excel Styles
+  private excelStyles: ExcelStyle[] = [
+    {
+      id: 'header',
+      font: { bold: true, color: '#FFFFFF' },
+      interior: { color: '#4472C4', pattern: 'Solid' },
+      alignment: { horizontal: 'Center' }
+    },
+    {
+      id: 'high-value',
+      font: { color: '#008000' },
+      interior: { color: '#D8F0D8', pattern: 'Solid' }
+    }
+  ];
+
+  constructor() {
+    // Store the original data
+    this.originalData = [...this.rowData];
+  }
+
+  ngOnInit() {}
+
+  // Export to Excel using the original row data (not the pivot view)
+  exportOriginalData() {
+    // Create a temporary hidden grid to export the original data
+    this.createTempGridAndExport();
+  }
+
+  // Export multiple sheets with original data
+  exportMultipleSheets() {
+    // Let's say we want to create separate sheets for each country
+    const countries = [...new Set(this.originalData.map(item => item.country))];
+    
+    // Create and export the first sheet (USA data)
+    if (countries.length > 0) {
+      const firstCountryData = this.originalData.filter(item => item.country === countries[0]);
+      this.createTempGridAndExport(firstCountryData, countries[0], false);
+      
+      // Add additional sheets for other countries
+      for (let i = 1; i < countries.length; i++) {
+        const countryData = this.originalData.filter(item => item.country === countries[i]);
+        this.createTempGridAndExport(countryData, countries[i], true);
+      }
+    }
+  }
+
+  // Helper method to create a temp grid and export its data
+  private createTempGridAndExport(data?: any[], sheetName?: string, append: boolean = false) {
+    // Create a temporary div to hold the grid
+    const tempDiv = document.createElement('div');
+    tempDiv.style.display = 'none';
+    document.body.appendChild(tempDiv);
+    
+    // Create a new grid in the temporary div
+    const gridOptions = {
+      columnDefs: [
+        { field: 'country', headerName: 'Country' },
+        { field: 'year', headerName: 'Year' },
+        { field: 'sport', headerName: 'Sport' },
+        { field: 'athlete', headerName: 'Athlete' },
+        { 
+          field: 'gold', 
+          headerName: 'Gold',
+          cellClassRules: {
+            'high-value': params => params.value > 2
+          }
+        },
+        { field: 'silver', headerName: 'Silver' },
+        { field: 'bronze', headerName: 'Bronze' }
+      ],
+      defaultColDef: {
+        width: 150
+      },
+      rowData: data || this.originalData,
+      suppressExcelExport: false
+    };
+    
+    // Create the grid
+    const gridApi = new (window as any).agGrid.Grid(tempDiv, gridOptions).gridApi;
+    
+    // Export params
+    const params: ExcelExportParams = {
+      fileName: 'olympic-data.xlsx',
+      sheetName: sheetName || 'All Data',
+      styles: this.excelStyles,
+      processHeaderCallback: (params: ExcelCell): string => {
+        params.styleId = 'header';
+        return params.value || '';
+      },
+      appendContent: append
+    };
+    
+    // Export the data
+    gridApi.exportDataAsExcel(params);
+    
+    // Clean up
+    document.body.removeChild(tempDiv);
+  }
+
+  onGridReady(params: GridReadyEvent) {
+    // Store original data when grid is ready (useful if loading data asynchronously)
+    this.originalData = [...this.rowData];
+  }
+}
