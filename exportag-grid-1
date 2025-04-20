@@ -231,3 +231,12 @@ function extractPivotFilter(pivotString, columns) {
   
   return filter;
 }
+
+const overlapColumn = columns.find(col => 
+        col !== column && value.includes(col)
+      );
+      
+      if (overlapColumn) {
+        // If there's overlap, only take the part before the next column name
+        value = value.split(`_${overlapColumn}`)[0];
+      }
