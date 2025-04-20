@@ -272,3 +272,31 @@ function parseKeyValue(
   }
   return result;
 }
+
+
+  processPivotResultColDef: colDef => {
+    const vp = colDef.pivotValueColumn;
+    if (vp && vp.getColDef().field === 'value') {
+      // remove "(sum)" from the header
+      colDef.suppressAggFuncInHeader = true;
+
+      colDef.valueGetter = params => {
+        // params.value is sum(value) at this pivot cell
+        const totalValue = params.value;
+
+        // grab every leaf RowNode under this cell and sum their months
+        const totalMonths = params.node.allLeafChildren
+          .reduce((sum, leaf) => sum + (leaf.data.NUM_AFFECTED_MONTHS || 0), 0);
+
+        return totalMonths
+          ? totalValue / totalMonths
+          : null;
+      };
+
+      colDef.valueFormatter = p =>
+        p.value != null
+          ? p.value.toFixed(2)
+          : '';
+    }
+  }
+};
