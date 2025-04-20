@@ -181,3 +181,31 @@ const gridOptions = {
     }
   }
 };
+
+// Define your custom aggregation function
+const divideByMonthsAggFunc = (params) => {
+  // Initialize variables to hold sum and count of affected months
+  let sum = 0;
+  let totalMonths = 0;
+  
+  // Iterate through all values in this group
+  params.values.forEach((value, index) => {
+    // The original row data is available in params.rowData
+    const rowData = params.rowData[index];
+    
+    // Get the number of affected months for this row
+    const months = rowData.NUM_AFFECTED_MONTHS;
+    
+    // Add to our running total, but only if months is valid
+    if (months && months > 0) {
+      sum += value;
+      totalMonths += months;
+    } else {
+      // Just add the value without division if no valid month count
+      sum += value;
+    }
+  });
+  
+  // If we have valid months, return the average, otherwise just return the sum
+  return totalMonths > 0 ? sum / totalMonths : sum;
+};
