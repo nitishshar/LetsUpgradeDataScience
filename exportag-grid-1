@@ -210,21 +210,24 @@ const divideByMonthsAggFunc = (params) => {
   return totalMonths > 0 ? sum / totalMonths : sum;
 };
 
-const filter = {};
+function extractPivotFilter(pivotString, columns) {
+  const filter = {};
   
-  // Loop through each column we're interested in
-  columns.forEach(column => {
-    // Skip the last column (presumably the measure/value column)
-    if (column === columns[columns.length - 1]) return;
+  // Process through each column
+  for (let i = 0; i < columns.length - 1; i++) {
+    const column = columns[i];
+    const nextColumn = columns[i + 1];
     
-    // Create regex pattern to find the column and its value
-    const pattern = new RegExp(`${column}_(\\w+)`, 'i');
+    // Look for the column followed by a value and then either another column or end of string
+    const pattern = new RegExp(`${column}_(.*?)(?:_${nextColumn}|$)`, 'i');
     const match = pivotString.match(pattern);
     
-    // If we found a match, add it to our filter object
     if (match && match[1]) {
-      filter[column] = match[1];
+      // Convert to number if possible
+      const value = isNaN(match[1]) ? match[1] : Number(match[1]);
+      filter[column] = value;
     }
-  });
+  }
   
   return filter;
+}
