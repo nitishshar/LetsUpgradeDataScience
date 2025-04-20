@@ -209,3 +209,22 @@ const divideByMonthsAggFunc = (params) => {
   // If we have valid months, return the average, otherwise just return the sum
   return totalMonths > 0 ? sum / totalMonths : sum;
 };
+
+const filter = {};
+  
+  // Loop through each column we're interested in
+  columns.forEach(column => {
+    // Skip the last column (presumably the measure/value column)
+    if (column === columns[columns.length - 1]) return;
+    
+    // Create regex pattern to find the column and its value
+    const pattern = new RegExp(`${column}_(\\w+)`, 'i');
+    const match = pivotString.match(pattern);
+    
+    // If we found a match, add it to our filter object
+    if (match && match[1]) {
+      filter[column] = match[1];
+    }
+  });
+  
+  return filter;
