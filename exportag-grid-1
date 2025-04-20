@@ -240,3 +240,35 @@ const overlapColumn = columns.find(col =>
         // If there's overlap, only take the part before the next column name
         value = value.split(`_${overlapColumn}`)[0];
       }
+
+
+
+
+function parseKeyValue(
+  columnNames: string[],
+  input: string
+): Record<string, string> {
+  // 1. Escape any regex‑special chars in your column names
+  const escapedCols = columnNames.map(n =>
+    n.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')
+  );
+
+  // 2. Build a global regex with named groups:
+  //    (?<key>COL)-(?<val>.*?)(?=(?:COL)-|$)
+  const pattern = new RegExp(
+    `(?<key>${escapedCols.join('|')})-(?<val>.*?)(?=(?:${escapedCols.join(
+      '|'
+    )})-|$)`,
+    'g'
+  );
+
+  // 3. Run through all matches and collect into an object
+  const result: Record<string, string> = {};
+  let m: RegExpExecArray | null;
+  while ((m = pattern.exec(input)) !== null) {
+    const { key, val } = m.groups!;
+    // (Optional) drop a trailing dash if one snuck into the capture
+    result[key] = val.replace(/-$/, '');
+  }
+  return result;
+}
