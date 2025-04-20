@@ -164,3 +164,20 @@ export class AppComponent implements OnInit {
     this.originalData = [...this.rowData];
   }
 }
+const gridOptions = {
+  // Other grid options
+  
+  // Enable column virtualization events
+  suppressColumnVirtualisation: false,
+  
+  // This will fire events when columns are virtually rendered
+  onVirtualColumnsChanged: (event) => {
+    // Get the newly visible columns
+    const columnIds = event.displayedColumns.map(col => col.getColId());
+    
+    // Auto-size these columns
+    if (columnIds.length > 0) {
+      gridOptions.columnApi.autoSizeColumns(columnIds);
+    }
+  }
+};
