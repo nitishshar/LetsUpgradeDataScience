@@ -310,3 +310,61 @@ myCustomTotal: {
       return customTotalCalculation(params);
     }
   }
+
+// 1) your custom aggregator
+function averagePerMonthAggFunc(params) {
+  let totalValue = 0;
+  let totalMonths = 0;
+
+  // params.rowNodes is the list of child RowNodes at this level
+  params.rowNodes.forEach(node => {
+    // if it's a group, grab its leaves; otherwise just itself
+    const leaves = node.allLeafChildren ?? [node];
+    leaves.forEach(leaf => {
+      totalValue  += leaf.data.myValueField;
+      totalMonths += leaf.data.NUM_AFFECTED_MONTHS;
+    });
+  });
+
+  // avoid division by zero
+  return totalMonths ? totalValue / totalMonths : null;
+}
+
+// 2) plug it into your colDef
+const columnDefs = [
+  // ... your other cols, including whatever you pivot on ...
+  {
+    headerName: 'Avg per Month',
+    colId: 'avgPerMonth',
+    // you must specify a field or colId–we use 'myValueField' only
+    // because aggFunc needs the RowNodes, not params.values
+    field: 'myValueField',
+    enableValue: true,
+    aggFunc: averagePerMonthAggFunc,
+    valueFormatter: params => params.value != null
+      ? params.value.toFixed(2)
+      : ''
+  },
+  // if you’re also aggregating NUM_AFFECTED_MONTHS as a hidden value col:
+  {
+    field: 'NUM_AFFECTED_MONTHS',
+    enableValue: true,
+    aggFunc: 'sum',
+    hide: true
+  }
+];
+
+// 3) grid options
+const gridOptions = {
+  columnDefs,
+  pivotMode: true,
+  // whatever pivot columns you need...
+  // remember to include your value columns (including avgPerMonth)
+  pivotColumnDefs: [
+    { field: 'somePivotKey' }
+  ],
+  // show grand totals:
+  groupIncludeTotalFooter: true,
+  groupIncludeFooter: false,
+};
+
