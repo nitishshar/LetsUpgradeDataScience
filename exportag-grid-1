@@ -300,3 +300,13 @@ function parseKeyValue(
     }
   }
 };
+
+myCustomTotal: {
+    aggFunc: myCustomAggFunction,
+    displayName: 'My Custom',
+    // Override how totals are calculated
+    getRowTotal: (params) => {
+      // Custom logic for calculating totals
+      return customTotalCalculation(params);
+    }
+  }
