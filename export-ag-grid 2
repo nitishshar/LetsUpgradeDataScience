@@ -157,3 +157,12 @@ export class AppComponent implements OnInit {
     // Any initialization code here
   }
 }
+
+onGridReady: params => {
+  // get the Columns panel instance
+  const colsPanel = params.api.getToolPanelInstance('columns');
+  colsPanel.addEventListener('selectionChanged', evt => {
+    // fires whenever a checkbox in the panel changes
+    console.log('panel checkbox toggled:', evt.column.getColId(), evt.selected);
+  });
+}
