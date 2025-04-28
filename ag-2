@@ -282,3 +282,50 @@ function showDimensionOutsideRowGroup(columnField) {
 // Example usage:
 // showDimensionOutsideRowGroup('country'); // To show country column outside row group
 // showDimensionOutsideRowGroup('year');    // Later, to switch to year instead
+
+ originalIndex: secondaryColumns.indexOf(column)
+const secondaryColumns = gridApi.getSecondaryColumns();
+  if (secondaryColumns && secondaryColumns.length > 0) {
+    // Sort columns based on their original position
+    defaultPivotResultColumnsState.forEach((colState, index) => {
+      const column = secondaryColumns.find(col => col.getColId() === colState.colId);
+      if (column) {
+        // Move column to its original position
+        const currentIndex = secondaryColumns.indexOf(column);
+        if (currentIndex !== colState.originalIndex) {
+          gridApi.moveColumn(colState.colId, colState.originalIndex);
+        }
+      }
+    });
+javascript// In your column definitions
+{
+  field: 'headcount',
+  aggFunc: yourCustomAggFunc, // Your existing custom aggregation function
+  valueFormatter: params => {
+    // Check if this row contains MONTH grouping at the most granular level
+    if (params.node.rowGroupColumn && 
+        params.node.rowGroupColumn.colId === 'MONTH' && 
+        params.node.leafGroup) {
+      // Return raw value without aggregation for MONTH level
+      return params.data ? params.data.headcount : '';
+    }
+    
+    // For other levels, return the aggregated value
+    return params.value !== undefined ? params.value : '';
+  }
+}
+Alternatively, you could use the processRowGroupCallback in your grid options to handle this special case:
+javascriptgridOptions = {
+  // ...other options
+  processRowGroupCallback: (params) => {
+    // Special handling for MONTH group and headcount field
+    if (params.colDef.field === 'headcount' && 
+        params.node.rowGroupColumn && 
+        params.node.rowGroupColumn.colId === 'MONTH') {
+      return params.data.headcount; // Return raw value
+    }
+    
+    // Default behavior for other groups/fields
+    return undefined; // Let ag-Grid handle as usual
+  }
+}
