@@ -1,0 +1,360 @@
+import chainlit as cl
+from chainlit.data import ChainlitDataLayer
+import sqlite3
+import json
+import uuid
+from datetime import datetime
+from typing import Optional, List, Dict, Any
+import asyncio
+
+class CustomDataLayer(ChainlitDataLayer):
+    def __init__(self, db_path: str = "chainlit_history.db"):
+        self.db_path = db_path
+        self.init_database()
+    
+    def init_database(self):
+        """Initialize the database with Chainlit-compatible schema"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Users table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                identifier TEXT UNIQUE,
+                metadata TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Threads (conversations) table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS threads (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                user_id TEXT,
+                metadata TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            )
+        ''')
+        
+        # Steps (messages) table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS steps (
+                id TEXT PRIMARY KEY,
+                thread_id TEXT,
+                type TEXT,
+                name TEXT,
+                output TEXT,
+                metadata TEXT,
+                parent_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (thread_id) REFERENCES threads (id)
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        print(f"✅ Chainlit database initialized at: {self.db_path}")
+    
+    async def create_user(self, user: cl.User) -> Optional[cl.User]:
+        """Create a new user"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                INSERT OR REPLACE INTO users (id, identifier, metadata)
+                VALUES (?, ?, ?)
+            ''', (user.id, user.identifier, json.dumps(user.metadata or {})))
+            conn.commit()
+            print(f"✅ Created user: {user.identifier}")
+            return user
+        except Exception as e:
+            print(f"❌ Error creating user: {e}")
+            return None
+        finally:
+            conn.close()
+    
+    async def get_user(self, identifier: str) -> Optional[cl.User]:
+        """Get user by identifier"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('SELECT * FROM users WHERE identifier = ?', (identifier,))
+            result = cursor.fetchone()
+            
+            if result:
+                return cl.User(
+                    id=result[0],
+                    identifier=result[1],
+                    metadata=json.loads(result[2]) if result[2] else {}
+                )
+            return None
+        except Exception as e:
+            print(f"❌ Error getting user: {e}")
+            return None
+        finally:
+            conn.close()
+    
+    async def create_thread(self, thread: cl.Thread) -> Optional[cl.Thread]:
+        """Create a new conversation thread"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                INSERT OR REPLACE INTO threads (id, name, user_id, metadata)
+                VALUES (?, ?, ?, ?)
+            ''', (thread.id, thread.name, thread.user_id, json.dumps(thread.metadata or {})))
+            conn.commit()
+            print(f"✅ Created thread: {thread.name}")
+            return thread
+        except Exception as e:
+            print(f"❌ Error creating thread: {e}")
+            return None
+        finally:
+            conn.close()
+    
+    async def get_thread(self, thread_id: str) -> Optional[cl.Thread]:
+        """Get thread by ID"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('SELECT * FROM threads WHERE id = ?', (thread_id,))
+            result = cursor.fetchone()
+            
+            if result:
+                return cl.Thread(
+                    id=result[0],
+                    name=result[1],
+                    user_id=result[2],
+                    metadata=json.loads(result[3]) if result[3] else {}
+                )
+            return None
+        except Exception as e:
+            print(f"❌ Error getting thread: {e}")
+            return None
+        finally:
+            conn.close()
+    
+    async def list_threads(self, user_id: str, pagination: cl.Pagination) -> cl.PaginatedResponse[cl.Thread]:
+        """List threads for a user with pagination"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            # Get total count
+            cursor.execute('SELECT COUNT(*) FROM threads WHERE user_id = ?', (user_id,))
+            total = cursor.fetchone()[0]
+            
+            # Get paginated results
+            offset = (pagination.page - 1) * pagination.page_size
+            cursor.execute('''
+                SELECT * FROM threads 
+                WHERE user_id = ? 
+                ORDER BY created_at DESC 
+                LIMIT ? OFFSET ?
+            ''', (user_id, pagination.page_size, offset))
+            
+            results = cursor.fetchall()
+            threads = []
+            
+            for row in results:
+                threads.append(cl.Thread(
+                    id=row[0],
+                    name=row[1],
+                    user_id=row[2],
+                    metadata=json.loads(row[3]) if row[3] else {}
+                ))
+            
+            return cl.PaginatedResponse(
+                data=threads,
+                page_info=cl.PageInfo(
+                    has_next_page=(offset + len(threads)) < total,
+                    has_previous_page=pagination.page > 1,
+                    start_cursor=str(offset),
+                    end_cursor=str(offset + len(threads))
+                )
+            )
+        except Exception as e:
+            print(f"❌ Error listing threads: {e}")
+            return cl.PaginatedResponse(data=[], page_info=cl.PageInfo())
+        finally:
+            conn.close()
+    
+    async def create_step(self, step: cl.Step) -> Optional[cl.Step]:
+        """Create a new step (message)"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                INSERT OR REPLACE INTO steps (id, thread_id, type, name, output, metadata, parent_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                step.id,
+                step.thread_id,
+                step.type,
+                step.name,
+                step.output,
+                json.dumps(step.metadata or {}),
+                step.parent_id
+            ))
+            conn.commit()
+            return step
+        except Exception as e:
+            print(f"❌ Error creating step: {e}")
+            return None
+        finally:
+            conn.close()
+    
+    async def get_thread_steps(self, thread_id: str) -> List[cl.Step]:
+        """Get all steps for a thread"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                SELECT * FROM steps 
+                WHERE thread_id = ? 
+                ORDER BY created_at ASC
+            ''', (thread_id,))
+            
+            results = cursor.fetchall()
+            steps = []
+            
+            for row in results:
+                steps.append(cl.Step(
+                    id=row[0],
+                    thread_id=row[1],
+                    type=row[2],
+                    name=row[3],
+                    output=row[4],
+                    metadata=json.loads(row[5]) if row[5] else {},
+                    parent_id=row[6]
+                ))
+            
+            return steps
+        except Exception as e:
+            print(f"❌ Error getting thread steps: {e}")
+            return []
+        finally:
+            conn.close()
+
+# Initialize the data layer
+data_layer = CustomDataLayer()
+cl.data_layer = data_layer
+
+@cl.on_chat_start
+async def start():
+    # Create or get user
+    user = cl.User(
+        id=str(uuid.uuid4()),
+        identifier="user@example.com",  # You can customize this
+        metadata={"name": "User"}
+    )
+    
+    # Set user in session
+    cl.user_session.set("user", user)
+    await data_layer.create_user(user)
+    
+    # Create new thread
+    thread_id = str(uuid.uuid4())
+    thread_name = f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    
+    thread = cl.Thread(
+        id=thread_id,
+        name=thread_name,
+        user_id=user.id,
+        metadata={}
+    )
+    
+    cl.user_session.set("thread", thread)
+    await data_layer.create_thread(thread)
+    
+    # Send welcome message
+    welcome_step = cl.Step(
+        id=str(uuid.uuid4()),
+        thread_id=thread_id,
+        type="assistant_message",
+        name="Assistant",
+        output="🎉 Welcome! Your chat history will be saved and visible in the sidebar.",
+        metadata={}
+    )
+    
+    await data_layer.create_step(welcome_step)
+    await cl.Message(content=welcome_step.output).send()
+
+@cl.on_message
+async def main(message: cl.Message):
+    thread = cl.user_session.get("thread")
+    
+    if not thread:
+        await cl.Message(content="Error: No active thread").send()
+        return
+    
+    # Save user message
+    user_step = cl.Step(
+        id=str(uuid.uuid4()),
+        thread_id=thread.id,
+        type="user_message",
+        name="User",
+        output=message.content,
+        metadata={}
+    )
+    await data_layer.create_step(user_step)
+    
+    # Generate response
+    response_content = f"You said: {message.content}\n\nThis conversation is saved and should appear in your chat history!"
+    
+    # Save assistant response
+    assistant_step = cl.Step(
+        id=str(uuid.uuid4()),
+        thread_id=thread.id,
+        type="assistant_message", 
+        name="Assistant",
+        output=response_content,
+        metadata={}
+    )
+    await data_layer.create_step(assistant_step)
+    
+    # Send response
+    await cl.Message(content=response_content).send()
+    
+    print(f"💾 Saved message to thread: {thread.name}")
+
+@cl.on_stop
+async def stop():
+    print("🛑 Chat stopped")
+
+
+
+
+
+
+[project]
+# Project settings
+name = "My Chainlit App"
+enable_telemetry = false
+
+[features]
+# Enable data persistence and chat history
+data_persistence = true
+chat_history = true
+
+[UI]
+# UI Configuration
+name = "My App"
+show_chat_history = true
+default_collapse_content = true
+default_expand_messages = true
+
+# Theme settings
+theme = "light"
+
+[meta]
+generated_by = "1.0.0"
