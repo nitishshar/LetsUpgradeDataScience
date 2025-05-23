@@ -14,7 +14,9 @@ database_path = ".chainlit/chat_history.db"
 # Enable chat history
 chat_history = true
 ```
-
+[UI]
+show_chat_history = true
+default_collapse_content = true
 ## 2. Custom Data Layer with Database
 
 For more control, implement a custom data layer:
