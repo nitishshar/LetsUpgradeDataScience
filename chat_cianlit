@@ -1,0 +1,212 @@
+To enable chat persistence for chat history in Chainlit, you have several options depending on your needs:
+
+## 1. Using Built-in Data Persistence (Recommended)
+
+Add this to your `config.toml`:
+
+```toml
+[project]
+# Enable data persistence
+enable_telemetry = false
+database_path = ".chainlit/chat_history.db"
+
+[features]
+# Enable chat history
+chat_history = true
+```
+
+## 2. Custom Data Layer with Database
+
+For more control, implement a custom data layer:
+
+```python
+import chainlit as cl
+from chainlit.data import ChainlitDataLayer
+import sqlite3
+from typing import Optional, List, Dict
+import json
+
+class CustomDataLayer(ChainlitDataLayer):
+    def __init__(self, db_path: str = "chat_history.db"):
+        self.db_path = db_path
+        self.init_db()
+    
+    def init_db(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                user_id TEXT,
+                messages TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+        conn.close()
+    
+    async def create_user(self, user_id: str) -> None:
+        # Implement user creation logic
+        pass
+    
+    async def get_user(self, user_id: str) -> Optional[Dict]:
+        # Implement user retrieval logic
+        pass
+    
+    async def create_conversation(self, conversation_id: str, user_id: str) -> None:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO conversations (id, user_id, messages) VALUES (?, ?, ?)",
+            (conversation_id, user_id, "[]")
+        )
+        conn.commit()
+        conn.close()
+    
+    async def get_conversation(self, conversation_id: str) -> Optional[Dict]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            return {
+                "id": result[0],
+                "user_id": result[1],
+                "messages": json.loads(result[2]),
+                "created_at": result[3],
+                "updated_at": result[4]
+            }
+        return None
+    
+    async def update_conversation(self, conversation_id: str, messages: List[Dict]) -> None:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE conversations SET messages = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (json.dumps(messages), conversation_id)
+        )
+        conn.commit()
+        conn.close()
+
+# Initialize the data layer
+data_layer = CustomDataLayer()
+cl.data_layer = data_layer
+```
+
+## 3. Using Session State for Simple Persistence
+
+For basic session-based persistence:
+
+```python
+import chainlit as cl
+
+@cl.on_chat_start
+async def start():
+    # Initialize chat history in session
+    if "chat_history" not in cl.user_session:
+        cl.user_session["chat_history"] = []
+
+@cl.on_message
+async def main(message: cl.Message):
+    # Add user message to history
+    cl.user_session["chat_history"].append({
+        "role": "user",
+        "content": message.content,
+        "timestamp": message.created_at
+    })
+    
+    # Your AI response logic here
+    response = f"Echo: {message.content}"
+    
+    # Add AI response to history
+    cl.user_session["chat_history"].append({
+        "role": "assistant",
+        "content": response,
+        "timestamp": None
+    })
+    
+    await cl.Message(content=response).send()
+
+@cl.on_chat_end
+async def end():
+    # Optionally save history when chat ends
+    history = cl.user_session.get("chat_history", [])
+    # Save to file or database
+    print(f"Chat ended with {len(history)} messages")
+```
+
+## 4. File-based Persistence
+
+Simple file-based approach:
+
+```python
+import chainlit as cl
+import json
+import os
+from datetime import datetime
+
+HISTORY_DIR = "chat_histories"
+
+@cl.on_chat_start
+async def start():
+    # Create history directory if it doesn't exist
+    os.makedirs(HISTORY_DIR, exist_ok=True)
+    
+    # Generate unique session ID
+    session_id = cl.user_session.get("id", f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    cl.user_session["session_id"] = session_id
+    cl.user_session["chat_history"] = []
+
+@cl.on_message
+async def main(message: cl.Message):
+    session_id = cl.user_session["session_id"]
+    
+    # Add to session history
+    cl.user_session["chat_history"].append({
+        "role": "user",
+        "content": message.content,
+        "timestamp": datetime.now().isoformat()
+    })
+    
+    # Your response logic
+    response = f"Response to: {message.content}"
+    
+    cl.user_session["chat_history"].append({
+        "role": "assistant", 
+        "content": response,
+        "timestamp": datetime.now().isoformat()
+    })
+    
+    # Save to file
+    history_file = os.path.join(HISTORY_DIR, f"{session_id}.json")
+    with open(history_file, 'w') as f:
+        json.dump(cl.user_session["chat_history"], f, indent=2)
+    
+    await cl.Message(content=response).send()
+```
+
+## 5. Configuration for Chat History UI
+
+Add to your `config.toml` to enable the chat history sidebar:
+
+```toml
+[UI]
+# Show chat history in sidebar
+show_chat_history = true
+chat_history_max_items = 50
+
+[features]
+# Enable various features
+chat_history = true
+multi_modal = true
+speech_to_text = false
+```
+
+## Recommended Approach
+
+For most use cases, I recommend starting with **option 1** (built-in persistence) as it's the simplest. If you need more control over the data storage or want to integrate with existing databases, go with **option 2** (custom data layer).
+
+The built-in approach will automatically handle conversation persistence and provide a chat history UI in the sidebar.
