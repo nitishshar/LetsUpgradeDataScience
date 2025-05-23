@@ -1,0 +1,22 @@
+h3[data-orientation="vertical"] button > span:first-child {
+  display: none;
+}
+
+p[id^="step-"] > span:first-child {
+  display: none;
+}
+
+/* Hide "Using"/"Used" text at the beginning of step messages */
+h3[data-orientation="vertical"] button > span:first-child {
+  display: none;
+}
+
+/* Hide "Using"/"Used" in inline step progress messages */
+p[id^="step-"] > span:first-child {
+  display: none;
+}
+
+/* Hide "Done" label after step completes */
+p[id^="step-"] span:contains("Done") {
+  display: none;
+}
