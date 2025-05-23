@@ -1,0 +1,94 @@
+In Chainlit, you can set the app header to be displayed during chat using the `cl.set_chat_settings()` function or by configuring it in your app. Here are the main approaches:
+
+## Method 1: Using `cl.header` decorator
+
+```python
+import chainlit as cl
+
+@cl.header
+def header():
+    return cl.Html("""
+    <div style="padding: 10px; background-color: #f0f0f0; text-align: center;">
+        <h2>My Chat Application</h2>
+        <p>Welcome to our AI assistant</p>
+    </div>
+    """)
+
+@cl.on_message
+async def main(message: cl.Message):
+    # Your chat logic here
+    await cl.Message(content="Hello!").send()
+```
+
+## Method 2: Using the config.toml file
+
+Create a `config.toml` file in your project root:
+
+```toml
+[UI]
+name = "My Chat App"
+description = "AI Assistant"
+hide_cot = false
+
+[UI.header]
+show = true
+html = """
+<div style="padding: 10px; background-color: #2c3e50; color: white; text-align: center;">
+    <h1>My Application Header</h1>
+</div>
+"""
+```
+
+## Method 3: Using `cl.set_chat_settings()`
+
+```python
+import chainlit as cl
+
+@cl.on_chat_start
+async def start():
+    settings = cl.ChatSettings(
+        [
+            cl.TextInput(
+                id="app_title",
+                label="Application Title",
+                initial="My Chat App"
+            )
+        ]
+    )
+    await cl.ChatSettings(settings).send()
+
+@cl.on_settings_update
+async def setup_agent(settings):
+    # Update header based on settings
+    pass
+```
+
+## Method 4: Custom HTML header that persists
+
+```python
+import chainlit as cl
+
+@cl.on_chat_start
+async def start():
+    # Send a persistent header message
+    await cl.Message(
+        content="",
+        elements=[
+            cl.Html(
+                content="""
+                <div style="position: sticky; top: 0; z-index: 1000; 
+                           background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); 
+                           color: white; padding: 15px; text-align: center; 
+                           margin-bottom: 20px;">
+                    <h2 style="margin: 0;">🤖 AI Assistant</h2>
+                    <p style="margin: 5px 0 0 0;">How can I help you today?</p>
+                </div>
+                """,
+                name="header"
+            )
+        ],
+        author="System"
+    ).send()
+```
+
+The most reliable method is using the `config.toml` approach as it ensures the header appears consistently across all chat sessions. The `@cl.header` decorator is also a clean programmatic approach if you need dynamic content in your header.
