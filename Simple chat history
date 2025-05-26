@@ -191,3 +191,24 @@ async def on_message(message: cl.Message):
 
     # Save assistant response to history
     await history.add_message(cl.user_session.id, response)
+
+
+
+import chainlit as cl
+
+@cl.on_chat_resume
+async def on_chat_resume():
+    history = cl.user_session.get("history")
+    if history:
+        messages = await history.get_messages(cl.user_session.id)
+        for msg in messages:
+            await cl.Message(author=msg.author, content=msg.content).send()
+
+
+
+
+[persistence]
+enabled = true
+
+[authentication]
+enabled = true
