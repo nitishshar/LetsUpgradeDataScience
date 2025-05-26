@@ -166,3 +166,28 @@ async def end():
     if session_id and messages:
         chat_history.save_session(session_id, messages)
         print(f"🏁 Final save: {len(messages)} messages")
+
+
+
+import chainlit as cl
+from sqlite_history import SQLiteHistory
+
+@cl.on_chat_start
+async def on_chat_start():
+    # Initialize and attach custom history
+    history = SQLiteHistory()
+    await history.setup()
+    cl.user_session.set("history", history)
+
+@cl.on_message
+async def on_message(message: cl.Message):
+    # Retrieve history and add current message
+    history = cl.user_session.get("history")
+    await history.add_message(cl.user_session.id, message)
+
+    # Generate and send a response (mock example)
+    response = cl.Message(author="assistant", content=f"You said: {message.content}")
+    await cl.Message(author="assistant", content=response.content).send()
+
+    # Save assistant response to history
+    await history.add_message(cl.user_session.id, response)
