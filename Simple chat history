@@ -1,0 +1,168 @@
+import chainlit as cl
+import sqlite3
+import json
+import uuid
+from datetime import datetime
+from typing import List, Dict
+
+class SimpleChatHistory:
+    def __init__(self, db_path: str = "simple_chat.db"):
+        self.db_path = db_path
+        self.init_db()
+    
+    def init_db(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                messages TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+        conn.close()
+        print(f"✅ Simple chat database initialized: {self.db_path}")
+    
+    def save_session(self, session_id: str, messages: List[Dict]):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Create title from first user message
+        title = "New Chat"
+        for msg in messages:
+            if msg.get("role") == "user":
+                title = msg["content"][:50] + ("..." if len(msg["content"]) > 50 else "")
+                break
+        
+        cursor.execute('''
+            INSERT OR REPLACE INTO chat_sessions (id, title, messages, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (session_id, title, json.dumps(messages)))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_all_sessions(self) -> List[Dict]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, title, created_at FROM chat_sessions ORDER BY updated_at DESC LIMIT 20')
+        results = cursor.fetchall()
+        conn.close()
+        
+        return [{"id": row[0], "title": row[1], "created_at": row[2]} for row in results]
+    
+    def get_session(self, session_id: str) -> Dict:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM chat_sessions WHERE id = ?', (session_id,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            return {
+                "id": result[0],
+                "title": result[1],
+                "messages": json.loads(result[2]),
+                "created_at": result[3]
+            }
+        return {}
+
+# Initialize
+chat_history = SimpleChatHistory()
+
+@cl.on_chat_start
+async def start():
+    session_id = str(uuid.uuid4())
+    cl.user_session.set("session_id", session_id)
+    cl.user_session.set("messages", [])
+    
+    # Show chat history in sidebar
+    await show_chat_history()
+    
+    # Welcome message
+    welcome_msg = "🎉 Welcome! Type '/history' to see previous chats, or '/clear' to start fresh."
+    cl.user_session.get("messages").append({
+        "role": "assistant",
+        "content": welcome_msg,
+        "timestamp": datetime.now().isoformat()
+    })
+    
+    await cl.Message(content=welcome_msg).send()
+
+async def show_chat_history():
+    """Display chat history in the sidebar"""
+    sessions = chat_history.get_all_sessions()
+    
+    if sessions:
+        history_content = "## 📚 Recent Chats\n\n"
+        for i, session in enumerate(sessions[:10], 1):
+            created = datetime.fromisoformat(session["created_at"]).strftime("%m/%d %H:%M")
+            history_content += f"**{i}.** {session['title']}\n*{created}*\n\n"
+        
+        # Send as a side message (this will appear in the interface)
+        await cl.Message(
+            content=history_content,
+            author="History"
+        ).send()
+
+@cl.on_message
+async def main(message: cl.Message):
+    session_id = cl.user_session.get("session_id")
+    messages = cl.user_session.get("messages", [])
+    
+    # Handle commands
+    if message.content.lower() == "/history":
+        sessions = chat_history.get_all_sessions()
+        if sessions:
+            history_text = "## 📚 Your Chat History\n\n"
+            for i, session in enumerate(sessions, 1):
+                created = datetime.fromisoformat(session["created_at"]).strftime("%Y-%m-%d %H:%M")
+                history_text += f"**{i}.** *{session['title']}*\n   📅 {created}\n\n"
+            
+            await cl.Message(content=history_text).send()
+        else:
+            await cl.Message(content="No chat history found.").send()
+        return
+    
+    elif message.content.lower() == "/clear":
+        cl.user_session.set("messages", [])
+        cl.user_session.set("session_id", str(uuid.uuid4()))
+        await cl.Message(content="✨ Chat cleared! Starting fresh.").send()
+        return
+    
+    # Add user message
+    messages.append({
+        "role": "user",
+        "content": message.content,
+        "timestamp": datetime.now().isoformat()
+    })
+    
+    # Generate response
+    response_content = f"You said: '{message.content}'\n\n💾 This conversation is being saved! You have {len(messages)} messages in this session."
+    
+    # Add assistant message
+    messages.append({
+        "role": "assistant", 
+        "content": response_content,
+        "timestamp": datetime.now().isoformat()
+    })
+    
+    # Save to database
+    chat_history.save_session(session_id, messages)
+    
+    # Send response
+    await cl.Message(content=response_content).send()
+    
+    print(f"💾 Saved session {session_id} with {len(messages)} messages")
+
+@cl.on_chat_end
+async def end():
+    session_id = cl.user_session.get("session_id")
+    messages = cl.user_session.get("messages", [])
+    
+    if session_id and messages:
+        chat_history.save_session(session_id, messages)
+        print(f"🏁 Final save: {len(messages)} messages")
