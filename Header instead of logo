@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Smart Chat</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      const interval = setInterval(() => {
+        const logo = document.querySelector("header img");
+        if (logo) {
+          // Remove the logo
+          logo.remove();
+
+          // Replace with custom message
+          const headerContainer = document.querySelector("header div");
+          const message = document.createElement("div");
+          message.innerText = "💬 Welcome to Smart Chat!";
+          message.style.fontSize = "20px";
+          message.style.fontWeight = "bold";
+          message.style.color = "#002B51";
+          message.style.marginLeft = "12px";
+
+          headerContainer.appendChild(message);
+          clearInterval(interval);
+        }
+      }, 100);
+    </script>
+  </body>
+</html>
