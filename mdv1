@@ -1,0 +1,152 @@
+Below is an updated standalone Angular 18+ component that gives you a two-pane editor/preview with a light-themed, glassy look, plus example files showing the JSON and resulting Markdown.
+
+---
+
+````typescript
+// json-markdown-editor.component.ts
+import { Component, Input, OnInit } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
+import { marked } from 'marked';
+
+@Component({
+  selector: 'json-markdown-editor',
+  standalone: true,
+  imports: [CommonModule, FormsModule],
+  template: `
+    <div class="container">
+      <div class="pane editor">
+        <textarea
+          [(ngModel)]="markdown"
+          (ngModelChange)="updatePreview()"
+          spellcheck="false"
+        ></textarea>
+      </div>
+      <div class="pane preview" [innerHTML]="renderedHtml"></div>
+    </div>
+  `,
+  styles: [`
+    .container {
+      display: flex;
+      gap: 1rem;
+      height: 80vh;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    .pane {
+      flex: 1;
+      background: rgba(255, 255, 255, 0.6);
+      backdrop-filter: blur(12px);
+      border-radius: 12px;
+      padding: 1rem;
+      box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+      overflow: auto;
+    }
+    .editor textarea {
+      width: 100%;
+      height: 100%;
+      border: none;
+      background: transparent;
+      resize: none;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 0.9rem;
+      outline: none;
+    }
+    .preview pre {
+      background: #f4f4f5;
+      padding: 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 0.9rem;
+    }
+    .preview code {
+      background: rgba(0,0,0,0.03);
+      padding: 0.2rem 0.4rem;
+      border-radius: 4px;
+    }
+  `]
+})
+export class JsonMarkdownEditorComponent implements OnInit {
+  /** Supply your JSON via this input */
+  @Input() json!: any;
+
+  markdown = '';
+  renderedHtml: SafeHtml = '';
+
+  constructor(private sanitizer: DomSanitizer) {}
+
+  ngOnInit() {
+    // initialize the editor with a JSON code-block
+    this.markdown = '```json\n' + JSON.stringify(this.json, null, 2) + '\n```';
+    this.updatePreview();
+  }
+
+  updatePreview() {
+    const html = marked.parse(this.markdown);
+    this.renderedHtml = this.sanitizer.bypassSecurityTrustHtml(html);
+  }
+}
+````
+
+### How it works
+
+* **Left pane** is a `<textarea>` bound to `markdown`, so you can edit the JSON-wrapped code block (or write any Markdown).
+* **Right pane** shows the live preview, parsed by `marked` and safely injected via `DomSanitizer`.
+* The container and panes use a **light glassy** style: semi-transparent white, rounded corners, blur backdrop, and a soft drop-shadow.
+
+---
+
+## Example files
+
+### `sample.json`
+
+```json
+{
+  "title": "Project Alpha",
+  "description": "A sample project to demonstrate JSON → Markdown rendering.",
+  "version": "1.0.0",
+  "contributors": [
+    { "name": "Alice", "role": "Developer" },
+    { "name": "Bob",   "role": "Designer"  }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/example/project-alpha.git"
+  }
+}
+```
+
+---
+
+### `sample.md` (what you’ll see in the editor)
+
+````markdown
+```json
+{
+  "title": "Project Alpha",
+  "description": "A sample project to demonstrate JSON → Markdown rendering.",
+  "version": "1.0.0",
+  "contributors": [
+    {
+      "name": "Alice",
+      "role": "Developer"
+    },
+    {
+      "name": "Bob",
+      "role": "Designer"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/example/project-alpha.git"
+  }
+}
+````
+
+```
+
+---
+
+Just drop `<json-markdown-editor [json]="yourObject"></json-markdown-editor>` into your app (adding `FormsModule` and `marked` as shown), and you’ll get a beautiful, editable JSON-to-Markdown playground in a light, glassy style.
+```
