@@ -1,0 +1,592 @@
+import asyncio
+import json
+import sqlite3
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+from uuid import uuid4, UUID
+
+import chainlit as cl
+from chainlit.data import BaseDataLayer
+from chainlit.types import (
+    ThreadDict, 
+    StepDict, 
+    ElementDict, 
+    Feedback, 
+    PersistedUser, 
+    User,
+    PaginatedResponse,
+    Pagination
+)
+from sqlalchemy import (
+    create_engine, 
+    Column, 
+    String, 
+    Text, 
+    Integer, 
+    DateTime, 
+    JSON,
+    ForeignKey,
+    Boolean
+)
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.dialects.sqlite import UUID as SQLiteUUID
+import uuid
+
+Base = declarative_base()
+
+class SQLiteUser(Base):
+    __tablename__ = 'users'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    identifier = Column(String, unique=True, nullable=False)
+    metadata = Column(JSON, nullable=False, default={})
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    threads = relationship("SQLiteThread", back_populates="user")
+
+class SQLiteThread(Base):
+    __tablename__ = 'threads'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    name = Column(String)
+    user_id = Column(String, ForeignKey('users.id'))
+    user_identifier = Column(String)
+    tags = Column(JSON, default=[])
+    metadata = Column(JSON, default={})
+    
+    # Relationships
+    user = relationship("SQLiteUser", back_populates="threads")
+    steps = relationship("SQLiteStep", back_populates="thread", cascade="all, delete-orphan")
+    elements = relationship("SQLiteElement", back_populates="thread", cascade="all, delete-orphan")
+    feedbacks = relationship("SQLiteFeedback", back_populates="thread", cascade="all, delete-orphan")
+
+class SQLiteStep(Base):
+    __tablename__ = 'steps'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    name = Column(String, nullable=False)
+    type = Column(String, nullable=False)
+    thread_id = Column(String, ForeignKey('threads.id'), nullable=False)
+    parent_id = Column(String, ForeignKey('steps.id'))
+    disable_feedback = Column(Boolean, default=False)
+    streaming = Column(Boolean, default=False)
+    waiting_for_answer = Column(Boolean, default=False)
+    is_error = Column(Boolean, default=False)
+    show_input = Column(String)
+    language = Column(String)
+    indent = Column(Integer, default=0)
+    author = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    start = Column(DateTime)
+    end = Column(DateTime)
+    input = Column(Text)
+    output = Column(Text)
+    metadata = Column(JSON, default={})
+    tags = Column(JSON, default=[])
+    
+    # Relationships
+    thread = relationship("SQLiteThread", back_populates="steps")
+    parent = relationship("SQLiteStep", remote_side=[id])
+    children = relationship("SQLiteStep")
+
+class SQLiteElement(Base):
+    __tablename__ = 'elements'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    thread_id = Column(String, ForeignKey('threads.id'), nullable=False)
+    type = Column(String)
+    url = Column(String)
+    chainlit_key = Column(String)
+    name = Column(String, nullable=False)
+    display = Column(String)
+    object_key = Column(String)
+    size = Column(String)
+    page = Column(Integer)
+    language = Column(String)
+    for_id = Column(String)
+    mime = Column(String)
+    props = Column(JSON, default={})
+    
+    # Relationships
+    thread = relationship("SQLiteThread", back_populates="elements")
+
+class SQLiteFeedback(Base):
+    __tablename__ = 'feedbacks'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    for_id = Column(String, nullable=False)
+    thread_id = Column(String, ForeignKey('threads.id'), nullable=False)
+    value = Column(Integer, nullable=False)
+    comment = Column(Text)
+    
+    # Relationships
+    thread = relationship("SQLiteThread", back_populates="feedbacks")
+
+class SQLiteChatSession(Base):
+    __tablename__ = 'chat_sessions'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    thread_id = Column(String, ForeignKey('threads.id'))
+    user_env = Column(JSON, default={})
+    chat_settings = Column(JSON, default={})
+
+class SQLiteDataLayer(BaseDataLayer):
+    def __init__(self, database_path: str = "chainlit.db"):
+        self.database_path = database_path
+        self.engine = create_engine(f'sqlite:///{database_path}', echo=False)
+        self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+        
+        # Create tables
+        Base.metadata.create_all(bind=self.engine)
+    
+    def get_session(self):
+        return self.SessionLocal()
+    
+    # User methods
+    async def get_user(self, identifier: str) -> Optional[PersistedUser]:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._get_user_sync, identifier)
+    
+    def _get_user_sync(self, identifier: str) -> Optional[PersistedUser]:
+        with self.get_session() as session:
+            user = session.query(SQLiteUser).filter(SQLiteUser.identifier == identifier).first()
+            if user:
+                return PersistedUser(
+                    id=user.id,
+                    identifier=user.identifier,
+                    metadata=user.metadata,
+                    createdAt=user.created_at.isoformat() if user.created_at else None
+                )
+            return None
+    
+    async def create_user(self, user: User) -> Optional[PersistedUser]:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._create_user_sync, user)
+    
+    def _create_user_sync(self, user: User) -> Optional[PersistedUser]:
+        with self.get_session() as session:
+            # Check if user already exists
+            existing_user = session.query(SQLiteUser).filter(SQLiteUser.identifier == user.identifier).first()
+            if existing_user:
+                return PersistedUser(
+                    id=existing_user.id,
+                    identifier=existing_user.identifier,
+                    metadata=existing_user.metadata,
+                    createdAt=existing_user.created_at.isoformat() if existing_user.created_at else None
+                )
+            
+            # Create new user
+            new_user = SQLiteUser(
+                identifier=user.identifier,
+                metadata=user.metadata or {}
+            )
+            session.add(new_user)
+            session.commit()
+            session.refresh(new_user)
+            
+            return PersistedUser(
+                id=new_user.id,
+                identifier=new_user.identifier,
+                metadata=new_user.metadata,
+                createdAt=new_user.created_at.isoformat() if new_user.created_at else None
+            )
+    
+    # Thread methods
+    async def get_thread_author(self, thread_id: str) -> Optional[str]:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._get_thread_author_sync, thread_id)
+    
+    def _get_thread_author_sync(self, thread_id: str) -> Optional[str]:
+        with self.get_session() as session:
+            thread = session.query(SQLiteThread).filter(SQLiteThread.id == thread_id).first()
+            return thread.user_identifier if thread else None
+    
+    async def get_thread(self, thread_id: str) -> Optional[ThreadDict]:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._get_thread_sync, thread_id)
+    
+    def _get_thread_sync(self, thread_id: str) -> Optional[ThreadDict]:
+        with self.get_session() as session:
+            thread = session.query(SQLiteThread).filter(SQLiteThread.id == thread_id).first()
+            if thread:
+                # Get steps for this thread
+                steps = []
+                for step in thread.steps:
+                    step_dict = StepDict(
+                        id=step.id,
+                        name=step.name,
+                        type=step.type,
+                        threadId=step.thread_id,
+                        parentId=step.parent_id,
+                        disableFeedback=step.disable_feedback,
+                        streaming=step.streaming,
+                        waitingForAnswer=step.waiting_for_answer,
+                        isError=step.is_error,
+                        input=step.input,
+                        output=step.output,
+                        createdAt=step.created_at.isoformat() if step.created_at else None,
+                        start=step.start.isoformat() if step.start else None,
+                        end=step.end.isoformat() if step.end else None,
+                        metadata=step.metadata,
+                        tags=step.tags
+                    )
+                    steps.append(step_dict)
+                
+                return ThreadDict(
+                    id=thread.id,
+                    name=thread.name,
+                    userId=thread.user_id,
+                    userIdentifier=thread.user_identifier,
+                    createdAt=thread.created_at.isoformat() if thread.created_at else None,
+                    metadata=thread.metadata,
+                    tags=thread.tags,
+                    steps=steps
+                )
+            return None
+    
+    async def list_threads(self, pagination: Pagination, filters: Dict[str, Any]) -> PaginatedResponse[ThreadDict]:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._list_threads_sync, pagination, filters)
+    
+    def _list_threads_sync(self, pagination: Pagination, filters: Dict[str, Any]) -> PaginatedResponse[ThreadDict]:
+        with self.get_session() as session:
+            query = session.query(SQLiteThread)
+            
+            # Apply filters
+            if 'userId' in filters:
+                query = query.filter(SQLiteThread.user_id == filters['userId'])
+            if 'userIdentifier' in filters:
+                query = query.filter(SQLiteThread.user_identifier == filters['userIdentifier'])
+            
+            # Get total count
+            total = query.count()
+            
+            # Apply pagination
+            query = query.offset(pagination.first).limit(pagination.cursor)
+            threads = query.all()
+            
+            # Convert to ThreadDict
+            thread_dicts = []
+            for thread in threads:
+                thread_dict = ThreadDict(
+                    id=thread.id,
+                    name=thread.name,
+                    userId=thread.user_id,
+                    userIdentifier=thread.user_identifier,
+                    createdAt=thread.created_at.isoformat() if thread.created_at else None,
+                    metadata=thread.metadata,
+                    tags=thread.tags
+                )
+                thread_dicts.append(thread_dict)
+            
+            return PaginatedResponse(
+                data=thread_dicts,
+                pageInfo={
+                    "hasNextPage": pagination.first + len(threads) < total,
+                    "startCursor": str(pagination.first) if threads else None,
+                    "endCursor": str(pagination.first + len(threads) - 1) if threads else None
+                }
+            )
+    
+    async def update_thread(
+        self,
+        thread_id: str,
+        name: Optional[str] = None,
+        user_id: Optional[str] = None,
+        metadata: Optional[Dict] = None,
+        tags: Optional[List[str]] = None,
+    ):
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._update_thread_sync, 
+                                        thread_id, name, user_id, metadata, tags)
+    
+    def _update_thread_sync(self, thread_id: str, name: Optional[str], 
+                          user_id: Optional[str], metadata: Optional[Dict], 
+                          tags: Optional[List[str]]):
+        with self.get_session() as session:
+            thread = session.query(SQLiteThread).filter(SQLiteThread.id == thread_id).first()
+            if thread:
+                if name is not None:
+                    thread.name = name
+                if user_id is not None:
+                    thread.user_id = user_id
+                if metadata is not None:
+                    thread.metadata = metadata
+                if tags is not None:
+                    thread.tags = tags
+                session.commit()
+    
+    async def delete_thread(self, thread_id: str):
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._delete_thread_sync, thread_id)
+    
+    def _delete_thread_sync(self, thread_id: str):
+        with self.get_session() as session:
+            thread = session.query(SQLiteThread).filter(SQLiteThread.id == thread_id).first()
+            if thread:
+                session.delete(thread)
+                session.commit()
+    
+    # Step methods
+    async def create_step(self, step_dict: StepDict):
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._create_step_sync, step_dict)
+    
+    def _create_step_sync(self, step_dict: StepDict):
+        with self.get_session() as session:
+            # Create thread if it doesn't exist
+            thread = session.query(SQLiteThread).filter(SQLiteThread.id == step_dict["threadId"]).first()
+            if not thread:
+                thread = SQLiteThread(
+                    id=step_dict["threadId"],
+                    user_identifier=step_dict.get("userIdentifier")
+                )
+                session.add(thread)
+                session.commit()
+            
+            step = SQLiteStep(
+                id=step_dict["id"],
+                name=step_dict["name"],
+                type=step_dict["type"],
+                thread_id=step_dict["threadId"],
+                parent_id=step_dict.get("parentId"),
+                disable_feedback=step_dict.get("disableFeedback", False),
+                streaming=step_dict.get("streaming", False),
+                waiting_for_answer=step_dict.get("waitingForAnswer", False),
+                is_error=step_dict.get("isError", False),
+                input=step_dict.get("input"),
+                output=step_dict.get("output"),
+                metadata=step_dict.get("metadata", {}),
+                tags=step_dict.get("tags", []),
+                created_at=datetime.fromisoformat(step_dict["createdAt"]) if step_dict.get("createdAt") else datetime.utcnow(),
+                start=datetime.fromisoformat(step_dict["start"]) if step_dict.get("start") else None,
+                end=datetime.fromisoformat(step_dict["end"]) if step_dict.get("end") else None
+            )
+            session.add(step)
+            session.commit()
+    
+    async def update_step(self, step_dict: StepDict):
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._update_step_sync, step_dict)
+    
+    def _update_step_sync(self, step_dict: StepDict):
+        with self.get_session() as session:
+            step = session.query(SQLiteStep).filter(SQLiteStep.id == step_dict["id"]).first()
+            if step:
+                for key, value in step_dict.items():
+                    if key == "disableFeedback":
+                        step.disable_feedback = value
+                    elif key == "waitingForAnswer":
+                        step.waiting_for_answer = value
+                    elif key == "isError":
+                        step.is_error = value
+                    elif key == "parentId":
+                        step.parent_id = value
+                    elif key == "createdAt" and value:
+                        step.created_at = datetime.fromisoformat(value)
+                    elif key == "start" and value:
+                        step.start = datetime.fromisoformat(value)
+                    elif key == "end" and value:
+                        step.end = datetime.fromisoformat(value)
+                    elif hasattr(step, key):
+                        setattr(step, key, value)
+                session.commit()
+    
+    async def delete_step(self, step_id: str):
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._delete_step_sync, step_id)
+    
+    def _delete_step_sync(self, step_id: str):
+        with self.get_session() as session:
+            step = session.query(SQLiteStep).filter(SQLiteStep.id == step_id).first()
+            if step:
+                session.delete(step)
+                session.commit()
+    
+    # Element methods
+    async def create_element(self, element_dict: ElementDict):
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._create_element_sync, element_dict)
+    
+    def _create_element_sync(self, element_dict: ElementDict):
+        with self.get_session() as session:
+            element = SQLiteElement(
+                id=element_dict["id"],
+                thread_id=element_dict["threadId"],
+                type=element_dict.get("type"),
+                url=element_dict.get("url"),
+                chainlit_key=element_dict.get("chainlitKey"),
+                name=element_dict["name"],
+                display=element_dict.get("display"),
+                object_key=element_dict.get("objectKey"),
+                size=element_dict.get("size"),
+                page=element_dict.get("page"),
+                language=element_dict.get("language"),
+                for_id=element_dict.get("forId"),
+                mime=element_dict.get("mime"),
+                props=element_dict.get("props", {})
+            )
+            session.add(element)
+            session.commit()
+    
+    async def get_element(self, thread_id: str, element_id: str) -> Optional[ElementDict]:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._get_element_sync, thread_id, element_id)
+    
+    def _get_element_sync(self, thread_id: str, element_id: str) -> Optional[ElementDict]:
+        with self.get_session() as session:
+            element = session.query(SQLiteElement).filter(
+                SQLiteElement.thread_id == thread_id,
+                SQLiteElement.id == element_id
+            ).first()
+            
+            if element:
+                return ElementDict(
+                    id=element.id,
+                    threadId=element.thread_id,
+                    type=element.type,
+                    url=element.url,
+                    chainlitKey=element.chainlit_key,
+                    name=element.name,
+                    display=element.display,
+                    objectKey=element.object_key,
+                    size=element.size,
+                    page=element.page,
+                    language=element.language,
+                    forId=element.for_id,
+                    mime=element.mime,
+                    props=element.props
+                )
+            return None
+    
+    async def delete_element(self, element_id: str):
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._delete_element_sync, element_id)
+    
+    def _delete_element_sync(self, element_id: str):
+        with self.get_session() as session:
+            element = session.query(SQLiteElement).filter(SQLiteElement.id == element_id).first()
+            if element:
+                session.delete(element)
+                session.commit()
+    
+    # Feedback methods
+    async def upsert_feedback(self, feedback: Feedback) -> str:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._upsert_feedback_sync, feedback)
+    
+    def _upsert_feedback_sync(self, feedback: Feedback) -> str:
+        with self.get_session() as session:
+            # Check if feedback already exists
+            existing_feedback = session.query(SQLiteFeedback).filter(
+                SQLiteFeedback.for_id == feedback.forId,
+                SQLiteFeedback.thread_id == feedback.threadId
+            ).first()
+            
+            if existing_feedback:
+                existing_feedback.value = feedback.value
+                existing_feedback.comment = feedback.comment
+                session.commit()
+                return existing_feedback.id
+            else:
+                new_feedback = SQLiteFeedback(
+                    for_id=feedback.forId,
+                    thread_id=feedback.threadId,
+                    value=feedback.value,
+                    comment=feedback.comment
+                )
+                session.add(new_feedback)
+                session.commit()
+                return new_feedback.id
+    
+    async def delete_feedback(self, feedback_id: str) -> bool:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._delete_feedback_sync, feedback_id)
+    
+    def _delete_feedback_sync(self, feedback_id: str) -> bool:
+        with self.get_session() as session:
+            feedback = session.query(SQLiteFeedback).filter(SQLiteFeedback.id == feedback_id).first()
+            if feedback:
+                session.delete(feedback)
+                session.commit()
+                return True
+            return False
+    
+    # Session methods
+    async def delete_user_session(self, id: str) -> bool:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._delete_user_session_sync, id)
+    
+    def _delete_user_session_sync(self, id: str) -> bool:
+        with self.get_session() as session:
+            chat_session = session.query(SQLiteChatSession).filter(SQLiteChatSession.id == id).first()
+            if chat_session:
+                session.delete(chat_session)
+                session.commit()
+                return True
+            return False
+
+# Usage example and setup
+@cl.data_layer
+def get_data_layer():
+    """
+    Initialize the SQLite data layer.
+    You can customize the database path by changing the parameter.
+    """
+    return SQLiteDataLayer(database_path="chainlit_chat_history.db")
+
+# Example Chainlit app with conversation history
+@cl.on_chat_start
+async def on_chat_start():
+    """Initialize chat session with history support"""
+    # Get current user
+    user = cl.user_session.get("user")
+    if user:
+        # Create or get user in database
+        data_layer = get_data_layer()
+        persisted_user = await data_layer.create_user(user)
+        cl.user_session.set("persisted_user", persisted_user)
+    
+    await cl.Message(
+        content="Hello! I'm your AI assistant with persistent memory. Your conversation history will be saved!"
+    ).send()
+
+@cl.on_message
+async def on_message(message: cl.Message):
+    """Handle incoming messages with history tracking"""
+    # Echo the message back (replace with your actual AI logic)
+    response = f"You said: {message.content}"
+    
+    # Send response
+    await cl.Message(content=response).send()
+
+# Example function to resume conversation
+async def resume_conversation(thread_id: str):
+    """Resume a previous conversation by thread ID"""
+    data_layer = get_data_layer()
+    thread = await data_layer.get_thread(thread_id)
+    
+    if thread:
+        # Display conversation history
+        for step in thread.get("steps", []):
+            if step.get("type") == "user_message":
+                await cl.Message(
+                    content=step.get("input", ""),
+                    author="User"
+                ).send()
+            elif step.get("type") == "assistant_message":
+                await cl.Message(
+                    content=step.get("output", ""),
+                    author="Assistant"
+                ).send()
+        
+        await cl.Message(
+            content="Conversation resumed! You can continue where you left off."
+        ).send()
+    else:
+        await cl.Message(
+            content="Sorry, I couldn't find that conversation."
+        ).send()
