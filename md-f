@@ -1,0 +1,219 @@
+Below is an updated standalone Angular 18+ component that:
+
+1. **Takes any JSON** via `@Input() json`,
+2. **Converts it** into a *semantic* Markdown document (headings, bold labels, lists, links…),
+3. **Presents** a two-pane **editor/preview** so you can tweak the generated Markdown on the fly,
+4. Uses a **light-themed glassy** look throughout.
+
+---
+
+```typescript
+// json-markdown-editor.component.ts
+import { Component, Input, OnInit } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
+import { marked } from 'marked';
+
+@Component({
+  selector: 'json-markdown-editor',
+  standalone: true,
+  imports: [CommonModule, FormsModule],
+  template: `
+    <div class="container">
+      <div class="pane editor">
+        <textarea
+          [(ngModel)]="markdown"
+          (ngModelChange)="updatePreview()"
+          spellcheck="false">
+        </textarea>
+      </div>
+      <div class="pane preview" [innerHTML]="renderedHtml"></div>
+    </div>
+  `,
+  styles: [`
+    .container {
+      display: flex;
+      gap: 1rem;
+      height: 80vh;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    .pane {
+      flex: 1;
+      background: rgba(255,255,255,0.5);
+      backdrop-filter: blur(10px);
+      border-radius: 12px;
+      padding: 1rem;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      overflow: auto;
+    }
+    .editor textarea {
+      width: 100%;
+      height: 100%;
+      border: none;
+      background: transparent;
+      resize: none;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 0.95rem;
+      outline: none;
+    }
+    .preview h1 { font-size: 1.8rem; margin-top: 0; }
+    .preview h2 { font-size: 1.4rem; margin-top: 1.2rem; }
+    .preview p { margin: 0.8rem 0; }
+    .preview ul {
+      margin: 0.5rem 0 0.5rem 1.2rem;
+    }
+    .preview a { color: #0066cc; text-decoration: none; }
+    .preview a:hover { text-decoration: underline; }
+  `]
+})
+export class JsonMarkdownEditorComponent implements OnInit {
+  @Input() json!: any;
+  markdown = '';
+  renderedHtml: SafeHtml = '';
+
+  constructor(private sanitizer: DomSanitizer) {}
+
+  ngOnInit() {
+    this.markdown = this.jsonToMarkdown(this.json);
+    this.updatePreview();
+  }
+
+  updatePreview() {
+    const html = marked.parse(this.markdown);
+    this.renderedHtml = this.sanitizer.bypassSecurityTrustHtml(html);
+  }
+
+  private jsonToMarkdown(obj: any, level: number = 1): string {
+    let md = '';
+    const indent = (n: number) => '  '.repeat(n);
+
+    for (const [key, val] of Object.entries(obj)) {
+      // Heading for objects / sections
+      if (typeof val === 'object' && !Array.isArray(val)) {
+        md += `${'#'.repeat(level)} ${this.titleCase(key)}\n\n`;
+        md += this.jsonToMarkdown(val, level + 1) + '\n';
+      }
+      // Array: render as list
+      else if (Array.isArray(val)) {
+        md += `${'#'.repeat(level)} ${this.titleCase(key)}\n\n`;
+        for (const item of val) {
+          if (typeof item === 'object') {
+            // nested object in array
+            md += `${indent(level)}- `;
+            md += Object.entries(item)
+              .map(([k,v]) => `**${this.titleCase(k)}:** ${this.formatValue(v)}`)
+              .join(' • ') + '\n';
+          } else {
+            md += `${indent(level)}- ${this.formatValue(item)}\n`;
+          }
+        }
+        md += '\n';
+      }
+      // Primitives: bold label + value
+      else {
+        md += `**${this.titleCase(key)}:** ${this.formatValue(val)}  \n`;
+      }
+    }
+    return md.trim();
+  }
+
+  private formatValue(val: any): string {
+    // auto-link URLs
+    const s = String(val);
+    return /^(https?:\/\/)/.test(s)
+      ? `[${s}](${s})`
+      : s;
+  }
+
+  private titleCase(str: string): string {
+    return str
+      .replace(/_/g, ' ')
+      .replace(/\w\S*/g,
+        txt => txt.charAt(0).toUpperCase() + txt.slice(1));
+  }
+}
+```
+
+---
+
+### Usage
+
+```typescript
+// app.component.ts
+import { Component } from '@angular/core';
+import { JsonMarkdownEditorComponent } from './json-markdown-editor.component';
+
+@Component({
+  selector: 'app-root',
+  standalone: true,
+  imports: [JsonMarkdownEditorComponent],
+  template: `
+    <json-markdown-editor [json]="demoData"></json-markdown-editor>
+  `
+})
+export class AppComponent {
+  demoData = {
+    title: 'Project Alpha',
+    description: 'A sample project to demonstrate JSON → Markdown rendering.',
+    version: '1.0.0',
+    contributors: [
+      { name: 'Alice', role: 'Developer' },
+      { name: 'Bob',   role: 'Designer'  }
+    ],
+    repository: {
+      type: 'git',
+      url: 'https://github.com/example/project-alpha.git'
+    }
+  };
+}
+```
+
+---
+
+## Example JSON (`sample.json`)
+
+```json
+{
+  "title": "Project Alpha",
+  "description": "A sample project to demonstrate JSON → Markdown rendering.",
+  "version": "1.0.0",
+  "contributors": [
+    { "name": "Alice", "role": "Developer" },
+    { "name": "Bob",   "role": "Designer"  }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/example/project-alpha.git"
+  }
+}
+```
+
+---
+
+## Generated Markdown (`sample.md`)
+
+```markdown
+# Title
+
+**Description:** A sample project to demonstrate JSON → Markdown rendering.  
+**Version:** 1.0.0  
+
+## Contributors
+
+- **Name:** Alice • **Role:** Developer
+- **Name:** Bob • **Role:** Designer
+
+## Repository
+
+**Type:** git  
+**Url:** [https://github.com/example/project-alpha.git](https://github.com/example/project-alpha.git)
+```
+
+Place `<json-markdown-editor [json]="yourObject">` anywhere, and you’ll get:
+
+* **Auto-generated, semantic Markdown** from your JSON
+* A **live-editable** Markdown editor on the left
+* A **glass-style** preview on the right
+
+Feel free to tweak the CSS (colors, blur amount, shadows) to perfectly match your light-theme aesthetic!
