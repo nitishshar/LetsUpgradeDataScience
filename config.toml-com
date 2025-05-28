@@ -1,0 +1,231 @@
+[project]
+# Whether to enable telemetry (default: true). No personal data is collected.
+enable_telemetry = true
+
+# List of environment variables to be provided by each user to use the app.
+user_env = []
+
+# Duration (in seconds) during which the session is saved when the connection is lost
+session_timeout = 3600
+
+# Enable third parties caching (e.g LangChain cache)
+cache = false
+
+# Authorized origins
+allow_origins = ["*"]
+
+# Follow symlink for asset mount (see https://github.com/Chainlit/chainlit/issues/317)
+# follow_symlink = false
+
+[features]
+# Show the prompt playground
+prompt_playground = true
+
+# Process and display HTML in messages. This can be a security risk (see https://stackoverflow.com/questions/19603097/why-is-it-dangerous-to-render-user-generated-html-or-javascript)
+unsafe_allow_html = false
+
+# Process and display mathematical expressions. This can clash with "$" characters in messages.
+latex = false
+
+# Automatically tag threads when an emoji is used in the thread name
+auto_tag_thread = true
+
+# Authorize users to upload files with messages
+multi_modal = true
+
+# Allows user to use speech to text
+[features.speech_to_text]
+enabled = false
+# See all languages here https://github.com/JamesBrill/react-speech-kit#supported-languages
+# language = "en-US"
+
+[features.audio]
+# Threshold for audio recording
+min_decibels = -45
+# Delay for the user to continue speaking in ms
+initial_silence_timeout = 3000
+# Delay for the user to continue speaking in ms
+silence_timeout = 1500
+# Above this duration (sec), the recording is sent
+max_duration = 15
+# Duration of the audio chunks in ms (for visualization)
+chunk_duration = 200
+
+[UI]
+# Name of the app and chatbot.
+name = "Chatbot"
+
+# Show the readme while the thread is empty.
+show_readme_as_default = true
+
+# Description of the app and chatbot. This is used for HTML tags.
+# description = ""
+
+# Large size content are by default collapsed for a cleaner ui
+default_collapse_content = true
+
+# The default value for the expand messages settings.
+default_expand_messages = false
+
+# Hide the chain of thought details from the user in the UI.
+hide_cot = false
+
+# Link to your github repo. This will add a github button in the UI's header.
+# github = ""
+
+# Specify a CSS file that can be used to customize the user interface.
+# The CSS file can be served from the public directory or via an external link.
+# custom_css = "/public/test.css"
+
+# Specify a Javascript file that can be used to customize the user interface.
+# The Javascript file can be served from the public directory.
+# custom_js = "/public/test.js"
+
+# Specify a custom font url.
+# custom_font = "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap"
+
+# Specify a custom build directory for the UI. This is used to serve the UI from a different location.
+# custom_build = "./public/build"
+
+# Override default MUI light theme. (Check theme.ts)
+[UI.theme]
+#layout = "wide"
+#font_family = "Inter, sans-serif"
+# primary_color = "#FF6B35"
+# background_color = "#FAFAFA"
+# paper_color = "#FFFFFF"
+
+# Override default MUI dark theme. (Check theme.ts)
+[UI.theme.dark]
+#layout = "wide"
+#font_family = "Inter, sans-serif"
+#primary_color = "#FF6B35"
+#background_color = "#1E1E1E"
+#paper_color = "#2D2D2D"
+
+# CRITICAL: Data persistence configuration for chat history
+[features.chat_history]
+# Enable chat history feature
+enabled = true
+
+# Show chat history in the sidebar
+show_history = true
+
+# Maximum number of threads to show in history
+max_threads = 50
+
+# Enable thread management (rename, delete)
+enable_thread_management = true
+
+# Auto-save thread name based on first message
+auto_name_threads = true
+
+# CRITICAL: Data layer configuration
+[data_layer]
+# Enable data persistence
+enabled = true
+
+# Data layer type - use "custom" for our SQLite implementation
+type = "custom"
+
+# Database configuration (if using built-in data layers)
+# For custom data layer, these are optional but can be used for additional config
+[data_layer.database]
+# Connection string or path
+# connection_string = "chainlit_chat_history.db"
+
+# Connection pool settings (for production)
+# pool_size = 10
+# max_overflow = 20
+
+# CRITICAL: Authentication settings (required for persistent chat history)
+[auth]
+# Enable authentication to associate chats with users
+enabled = true
+
+# Authentication method - you can use "header", "oauth", or "custom"
+# For development, you can use a simple header-based auth
+method = "header"
+
+# Header name for user identification (when using header auth)
+header_name = "X-User-ID"
+
+# Allow anonymous users (they'll get a generated ID)
+allow_anonymous = true
+
+# Session configuration
+[auth.session]
+# Session duration in seconds (24 hours)
+duration = 86400
+
+# Session cookie settings
+secure = false  # Set to true in production with HTTPS
+same_site = "lax"
+
+# OAuth settings (if using OAuth)
+# [auth.oauth]
+# provider = "google"
+# client_id = "your-client-id"
+# client_secret = "your-client-secret"
+# redirect_uri = "http://localhost:8000/auth/callback"
+
+# Custom authentication settings (if using custom auth)
+# [auth.custom]
+# login_url = "/custom/login"
+# logout_url = "/custom/logout"
+
+# IMPORTANT: Thread settings for better chat history experience
+[features.thread]
+# Enable thread features
+enabled = true
+
+# Show thread list in sidebar
+show_list = true
+
+# Allow users to create new threads
+allow_new_thread = true
+
+# Allow users to rename threads
+allow_rename = true
+
+# Allow users to delete threads
+allow_delete = true
+
+# Maximum thread name length
+max_name_length = 100
+
+# Auto-archive old threads (days)
+auto_archive_days = 30
+
+# Performance settings for large chat histories
+[performance]
+# Enable lazy loading for chat history
+lazy_load_history = true
+
+# Number of messages to load initially
+initial_message_count = 50
+
+# Number of additional messages to load when scrolling
+load_more_count = 25
+
+# Cache settings for better performance
+enable_message_cache = true
+cache_duration = 3600  # 1 hour
+
+# Database connection pooling (for production)
+[database]
+# Connection pool size
+pool_size = 5
+
+# Maximum overflow connections
+max_overflow = 10
+
+# Connection timeout in seconds
+connect_timeout = 30
+
+# Query timeout in seconds
+query_timeout = 60
+
+# Enable connection recycling
+recycle_connections = true
+recycle_time = 3600  # 1 hour
