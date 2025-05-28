@@ -1,0 +1,115 @@
+Here’s a self-contained, Angular 18+ standalone component that takes any JSON object, converts it into a Markdown‐style code block, and renders it beautifully in your app using the [marked](https://www.npmjs.com/package/marked) parser and Angular’s `DomSanitizer`:
+
+```bash
+# 1. Install the markdown parser
+npm install marked
+```
+
+````typescript
+// json-markdown.component.ts
+import { Component, Input, OnChanges } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
+import { marked } from 'marked';
+
+@Component({
+  selector: 'json-markdown',
+  standalone: true,
+  imports: [CommonModule],
+  template: `
+    <div class="markdown-container" [innerHTML]="renderedHtml"></div>
+  `,
+  styles: [`
+    .markdown-container {
+      background: #f9f9fa;
+      padding: 1.5rem;
+      border-radius: 8px;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      line-height: 1.6;
+    }
+    /* Markdown headings */
+    .markdown-container h1 { font-size: 2rem; margin-top: 1.2rem; }
+    .markdown-container h2 { font-size: 1.75rem; }
+    .markdown-container h3 { font-size: 1.5rem; }
+    /* Code block styling */
+    .markdown-container pre {
+      background: #2d2d2d;
+      color: #f8f8f2;
+      padding: 1rem;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 0.9rem;
+    }
+    .markdown-container code {
+      background: rgba(0,0,0,0.05);
+      padding: 0.2rem 0.4rem;
+      border-radius: 4px;
+      font-family: 'Courier New', Courier, monospace;
+    }
+    /* Lists and paragraphs */
+    .markdown-container p { margin: 0.8rem 0; }
+    .markdown-container ul,
+    .markdown-container ol {
+      margin: 0.8rem 0 0.8rem 1.5rem;
+    }
+  `]
+})
+export class JsonMarkdownComponent implements OnChanges {
+  /** Input JSON object to render */
+  @Input() json!: any;
+
+  /** The sanitized HTML generated from Markdown */
+  renderedHtml: SafeHtml = '';
+
+  constructor(private sanitizer: DomSanitizer) {}
+
+  ngOnChanges() {
+    if (this.json !== undefined) {
+      // Convert JSON to a Markdown code block
+      const md = '```json\n' + JSON.stringify(this.json, null, 2) + '\n```';
+      // Parse to HTML
+      const html = marked.parse(md);
+      // Sanitize for Angular binding
+      this.renderedHtml = this.sanitizer.bypassSecurityTrustHtml(html);
+    }
+  }
+}
+````
+
+### How to use
+
+1. **Add the component**
+   Since it’s standalone, you can import it directly into any other component or your root module:
+
+   ```typescript
+   // app.component.ts
+   import { Component } from '@angular/core';
+   import { JsonMarkdownComponent } from './json-markdown.component';
+
+   @Component({
+     selector: 'app-root',
+     standalone: true,
+     imports: [JsonMarkdownComponent],
+     template: `
+       <json-markdown [json]="myData"></json-markdown>
+     `
+   })
+   export class AppComponent {
+     myData = {
+       name: 'Alice',
+       age: 30,
+       skills: ['Angular', 'TypeScript', 'Markdown']
+     };
+   }
+   ```
+
+2. **Styling**
+   You can tweak the `styles` in `JsonMarkdownComponent` to suit your theme—adjust fonts, colors, border-radii, etc.
+
+3. **Optional syntax highlighting**
+   If you’d like to add syntax highlighting, install Prism.js (or highlight.js), include its CSS in `angular.json`, and hook it into the `marked` renderer.
+
+---
+
+With this setup you get a reusable, standalone Angular 18+ component that beautifully renders any JSON as a formatted Markdown code block.
