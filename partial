@@ -1,0 +1,142 @@
+# Chainlit SQLite Data Layer Setup Guide
+
+## Installation
+
+First, install the required dependencies:
+
+```bash
+pip install chainlit sqlalchemy
+```
+
+## File Structure
+
+Create the following files in your project:
+
+```
+your_project/
+├── sqlite_data_layer.py  # The data layer implementation
+├── app.py               # Your main Chainlit application
+└── chainlit_chat_history.db  # SQLite database (created automatically)
+```
+
+## Usage
+
+### 1. Save the Data Layer Implementation
+
+Save the complete SQLite data layer implementation as `sqlite_data_layer.py`.
+
+### 2. Create Your Chainlit App
+
+Create `app.py` with the following content:
+
+```python
+import chainlit as cl
+from sqlite_data_layer import SQLiteDataLayer
+
+# Initialize the data layer
+@cl.data_layer
+def get_data_layer():
+    return SQLiteDataLayer(database_path="chainlit_chat_history.db")
+
+@cl.on_chat_start
+async def on_chat_start():
+    """Initialize chat session"""
+    await cl.Message(
+        content="Hello! I'm your AI assistant with persistent chat history. Your conversations will be saved and can be resumed later!"
+    ).send()
+
+@cl.on_message
+async def on_message(message: cl.Message):
+    """Handle incoming messages"""
+    # Your AI logic here
+    response = f"You said: {message.content}"
+    
+    await cl.Message(content=response).send()
+
+# Optional: Add conversation resumption functionality
+@cl.action_callback("resume_conversation")
+async def resume_conversation(action):
+    """Resume a previous conversation"""
+    thread_id = action.value
+    data_layer = get_data_layer()
+    thread = await data_layer.get_thread(thread_id)
+    
+    if thread and thread.get("steps"):
+        await cl.Message(
+            content="Here's your conversation history:"
+        ).send()
+        
+        for step in thread["steps"]:
+            if step.get("input"):
+                await cl.Message(
+                    content=f"**You:** {step['input']}",
+                    author="User"
+                ).send()
+            if step.get("output"):
+                await cl.Message(
+                    content=f"**Assistant:** {step['output']}",
+                    author="Assistant"
+                ).send()
+        
+        await cl.Message(
+            content="Conversation resumed! Continue where you left off."
+        ).send()
+    else:
+        await cl.Message(
+            content="No conversation history found."
+        ).send()
+```
+
+### 3. Run Your Application
+
+```bash
+chainlit run app.py
+```
+
+## Key Features
+
+### 1. **Automatic Chat History**
+- All conversations are automatically saved to the SQLite database
+- No additional configuration required
+- Chat history persists across sessions
+
+### 2. **User Management**
+- Users are automatically created and managed
+- Each user's conversations are tracked separately
+- User metadata can be stored and retrieved
+
+### 3. **Thread Management**
+- Each conversation is stored as a "thread"
+- Threads contain all messages (steps) in chronological order
+- Metadata and tags can be attached to threads
+
+### 4. **Message Persistence**
+- All user inputs and AI responses are saved
+- Message timestamps, metadata, and relationships are preserved
+- Support for different message types (text, images, files, etc.)
+
+### 5. **Feedback System**
+- User feedback on messages is stored
+- Feedback can be queried and analyzed
+- Support for ratings and comments
+
+## Database Schema
+
+The implementation creates the following tables:
+
+- **users**: Store user information and metadata
+- **threads**: Store conversation threads
+- **steps**: Store individual messages/steps in conversations
+- **elements**: Store files, images, and other attachments
+- **feedbacks**: Store user feedback on messages
+- **chat_sessions**: Store session information
+
+## Advanced Usage
+
+### Querying Chat History
+
+```python
+# Get all threads for a user
+data_layer = get_data_layer()
+threads = await data_layer.list_threads(
+    pagination=Pagination(first=
