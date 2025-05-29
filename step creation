@@ -1,0 +1,168 @@
+def _create_step_sync(self, step_dict: StepDict):
+    with self.get_session() as session:
+        # Check if thread exists, create only if it doesn't
+        thread = session.query(SQLiteThread).filter(SQLiteThread.id == step_dict["threadId"]).first()
+        if not thread:
+            thread = SQLiteThread(
+                id=step_dict["threadId"],
+                user_identifier=step_dict.get("userIdentifier")
+            )
+            session.add(thread)
+            try:
+                session.commit()
+            except Exception as e:
+                # If thread creation fails due to unique constraint, rollback and query again
+                session.rollback()
+                thread = session.query(SQLiteThread).filter(SQLiteThread.id == step_dict["threadId"]).first()
+                if not thread:
+                    raise e  # Re-raise if it's a different error
+        
+        # Check if step already exists to avoid duplicate creation
+        existing_step = session.query(SQLiteStep).filter(SQLiteStep.id == step_dict["id"]).first()
+        if existing_step:
+            # Update existing step instead of creating duplicate
+            for key, value in step_dict.items():
+                if key == "disableFeedback":
+                    existing_step.disable_feedback = value
+                elif key == "waitingForAnswer":
+                    existing_step.waiting_for_answer = value
+                elif key == "isError":
+                    existing_step.is_error = value
+                elif key == "parentId":
+                    existing_step.parent_id = value
+                elif key == "createdAt" and value:
+                    existing_step.created_at = datetime.fromisoformat(value)
+                elif key == "start" and value:
+                    existing_step.start = datetime.fromisoformat(value)
+                elif key == "end" and value:
+                    existing_step.end = datetime.fromisoformat(value)
+                elif hasattr(existing_step, key) and key not in ["id", "threadId"]:
+                    setattr(existing_step, key, value)
+            session.commit()
+            return
+        
+        # Create new step
+        step = SQLiteStep(
+            id=step_dict["id"],
+            name=step_dict["name"],
+            type=step_dict["type"],
+            thread_id=step_dict["threadId"],
+            parent_id=step_dict.get("parentId"),
+            disable_feedback=step_dict.get("disableFeedback", False),
+            streaming=step_dict.get("streaming", False),
+            waiting_for_answer=step_dict.get("waitingForAnswer", False),
+            is_error=step_dict.get("isError", False),
+            input=step_dict.get("input"),
+            output=step_dict.get("output"),
+            metadata=step_dict.get("metadata", {}),
+            tags=step_dict.get("tags", []),
+            created_at=datetime.fromisoformat(step_dict["createdAt"]) if step_dict.get("createdAt") else datetime.utcnow(),
+            start=datetime.fromisoformat(step_dict["start"]) if step_dict.get("start") else None,
+            end=datetime.fromisoformat(step_dict["end"]) if step_dict.get("end") else None
+        )
+        session.add(step)
+        session.commit()
+
+
+
+
+v2
+# Thread creation helper method
+async def create_thread(self, thread_dict: ThreadDict):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, self._create_thread_sync, thread_dict)
+
+def _create_thread_sync(self, thread_dict: ThreadDict):
+    with self.get_session() as session:
+        # Check if thread already exists
+        existing_thread = session.query(SQLiteThread).filter(SQLiteThread.id == thread_dict["id"]).first()
+        if existing_thread:
+            return existing_thread
+        
+        # Create new thread
+        thread = SQLiteThread(
+            id=thread_dict["id"],
+            name=thread_dict.get("name"),
+            user_id=thread_dict.get("userId"),
+            user_identifier=thread_dict.get("userIdentifier"),
+            tags=thread_dict.get("tags", []),
+            metadata=thread_dict.get("metadata", {}),
+            created_at=datetime.fromisoformat(thread_dict["createdAt"]) if thread_dict.get("createdAt") else datetime.utcnow()
+        )
+        session.add(thread)
+        try:
+            session.commit()
+            session.refresh(thread)
+            return thread
+        except Exception as e:
+            session.rollback()
+            # Check if thread was created by another process
+            existing_thread = session.query(SQLiteThread).filter(SQLiteThread.id == thread_dict["id"]).first()
+            if existing_thread:
+                return existing_thread
+            raise e
+
+def _create_step_sync(self, step_dict: StepDict):
+    with self.get_session() as session:
+        # Check if thread exists, create only if it doesn't
+        thread = session.query(SQLiteThread).filter(SQLiteThread.id == step_dict["threadId"]).first()
+        if not thread:
+            thread = SQLiteThread(
+                id=step_dict["threadId"],
+                user_identifier=step_dict.get("userIdentifier")
+            )
+            session.add(thread)
+            try:
+                session.commit()
+            except Exception as e:
+                # If thread creation fails due to unique constraint, rollback and query again
+                session.rollback()
+                thread = session.query(SQLiteThread).filter(SQLiteThread.id == step_dict["threadId"]).first()
+                if not thread:
+                    raise e  # Re-raise if it's a different error
+        
+        # Check if step already exists to avoid duplicate creation
+        existing_step = session.query(SQLiteStep).filter(SQLiteStep.id == step_dict["id"]).first()
+        if existing_step:
+            # Update existing step instead of creating duplicate
+            for key, value in step_dict.items():
+                if key == "disableFeedback":
+                    existing_step.disable_feedback = value
+                elif key == "waitingForAnswer":
+                    existing_step.waiting_for_answer = value
+                elif key == "isError":
+                    existing_step.is_error = value
+                elif key == "parentId":
+                    existing_step.parent_id = value
+                elif key == "createdAt" and value:
+                    existing_step.created_at = datetime.fromisoformat(value)
+                elif key == "start" and value:
+                    existing_step.start = datetime.fromisoformat(value)
+                elif key == "end" and value:
+                    existing_step.end = datetime.fromisoformat(value)
+                elif hasattr(existing_step, key) and key not in ["id", "threadId"]:
+                    setattr(existing_step, key, value)
+            session.commit()
+            return
+        
+        # Create new step
+        step = SQLiteStep(
+            id=step_dict["id"],
+            name=step_dict["name"],
+            type=step_dict["type"],
+            thread_id=step_dict["threadId"],
+            parent_id=step_dict.get("parentId"),
+            disable_feedback=step_dict.get("disableFeedback", False),
+            streaming=step_dict.get("streaming", False),
+            waiting_for_answer=step_dict.get("waitingForAnswer", False),
+            is_error=step_dict.get("isError", False),
+            input=step_dict.get("input"),
+            output=step_dict.get("output"),
+            metadata=step_dict.get("metadata", {}),
+            tags=step_dict.get("tags", []),
+            created_at=datetime.fromisoformat(step_dict["createdAt"]) if step_dict.get("createdAt") else datetime.utcnow(),
+            start=datetime.fromisoformat(step_dict["start"]) if step_dict.get("start") else None,
+            end=datetime.fromisoformat(step_dict["end"]) if step_dict.get("end") else None
+        )
+        session.add(step)
+        session.commit()
