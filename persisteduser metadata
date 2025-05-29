@@ -1,0 +1,90 @@
+class SQLiteUser(Base):
+    __tablename__ = 'users'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    identifier = Column(String, unique=True, nullable=False)
+    metadata = Column(JSON, nullable=False, default=dict)  # Use dict instead of {}
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    threads = relationship("SQLiteThread", back_populates="user")
+
+
+
+    def _get_user_sync(self, identifier: str) -> Optional[PersistedUser]:
+    with self.get_session() as session:
+        user = session.query(SQLiteUser).filter(SQLiteUser.identifier == identifier).first()
+        if user:
+            # Ensure metadata is a dict and handle None case
+            metadata = user.metadata if user.metadata is not None else {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            
+            return PersistedUser(
+                id=user.id,
+                identifier=user.identifier,
+                metadata=metadata,
+                createdAt=user.created_at.isoformat() if user.created_at else None
+            )
+        return None
+
+def _create_user_sync(self, user: User) -> Optional[PersistedUser]:
+    with self.get_session() as session:
+        # Check if user already exists
+        existing_user = session.query(SQLiteUser).filter(SQLiteUser.identifier == user.identifier).first()
+        if existing_user:
+            # Ensure metadata is a dict for existing user
+            metadata = existing_user.metadata if existing_user.metadata is not None else {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            
+            return PersistedUser(
+                id=existing_user.id,
+                identifier=existing_user.identifier,
+                metadata=metadata,
+                createdAt=existing_user.created_at.isoformat() if existing_user.created_at else None
+            )
+        
+        # Prepare metadata for new user
+        user_metadata = user.metadata if user.metadata is not None else {}
+        if not isinstance(user_metadata, dict):
+            user_metadata = {}
+        
+        # Create new user
+        new_user = SQLiteUser(
+            identifier=user.identifier,
+            metadata=user_metadata
+        )
+        session.add(new_user)
+        
+        try:
+            session.commit()
+            session.refresh(new_user)
+            
+            # Ensure metadata is a dict for return
+            return_metadata = new_user.metadata if new_user.metadata is not None else {}
+            if not isinstance(return_metadata, dict):
+                return_metadata = {}
+            
+            return PersistedUser(
+                id=new_user.id,
+                identifier=new_user.identifier,
+                metadata=return_metadata,
+                createdAt=new_user.created_at.isoformat() if new_user.created_at else None
+            )
+        except Exception as e:
+            session.rollback()
+            # Check if user was created by another process
+            existing_user = session.query(SQLiteUser).filter(SQLiteUser.identifier == user.identifier).first()
+            if existing_user:
+                metadata = existing_user.metadata if existing_user.metadata is not None else {}
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                
+                return PersistedUser(
+                    id=existing_user.id,
+                    identifier=existing_user.identifier,
+                    metadata=metadata,
+                    createdAt=existing_user.created_at.isoformat() if existing_user.created_at else None
+                )
+            raise e
