@@ -1,0 +1,293 @@
+# ============================================================================
+# MINIMAL config.toml (create this file in your project root)
+# ============================================================================
+
+"""
+[project]
+enable_telemetry = true
+session_timeout = 3600
+
+[features]
+prompt_playground = true
+multi_modal = true
+
+# CRITICAL: Enable chat history
+[features.chat_history]
+enabled = true
+show_history = true
+max_threads = 50
+enable_thread_management = true
+auto_name_threads = true
+
+# CRITICAL: Enable data persistence
+[data_layer]
+enabled = true
+type = "custom"
+
+# CRITICAL: Enable authentication for user-specific chat history
+[auth]
+enabled = true
+method = "header"
+header_name = "X-User-ID"
+allow_anonymous = true
+
+[UI]
+name = "AI Assistant with Chat History"
+show_readme_as_default = false
+default_expand_messages = false
+"""
+
+# ============================================================================
+# Enhanced app.py with chat history features
+# ============================================================================
+
+import chainlit as cl
+from sqlite_data_layer import SQLiteDataLayer
+from datetime import datetime
+import uuid
+
+# Initialize the data layer
+@cl.data_layer
+def get_data_layer():
+    return SQLiteDataLayer(database_path="chainlit_chat_history.db")
+
+@cl.on_chat_start
+async def on_chat_start():
+    """Initialize chat session with history support"""
+    
+    # Set up user if not exists
+    user = cl.user_session.get("user")
+    if not user:
+        # Create anonymous user with unique identifier
+        user = cl.User(
+            identifier=f"user_{uuid.uuid4().hex[:8]}", 
+            metadata={"created_at": datetime.utcnow().isoformat()}
+        )
+        cl.user_session.set("user", user)
+    
+    # Get or create user in database
+    data_layer = get_data_layer()
+    persisted_user = await data_layer.create_user(user)
+    cl.user_session.set("persisted_user", persisted_user)
+    
+    # Check for existing conversations
+    from chainlit.types import Pagination
+    threads = await data_layer.list_threads(
+        pagination=Pagination(first=0, cursor=5),
+        filters={"userIdentifier": user.identifier}
+    )
+    
+    welcome_message = "🤖 Welcome to your AI Assistant with Chat History!\n\n"
+    
+    if threads.data:
+        welcome_message += f"📚 You have {len(threads.data)} previous conversations.\n"
+        welcome_message += "💬 You can view them in the chat history sidebar or start a new conversation here."
+        
+        # Add quick access to recent conversations
+        actions = []
+        for thread in threads.data[:3]:  # Show last 3 conversations
+            thread_name = thread.get("name", "Untitled")
+            if len(thread_name) > 30:
+                thread_name = thread_name[:30] + "..."
+            
+            actions.append(
+                cl.Action(
+                    name="resume_conversation",
+                    value=thread["id"],
+                    label=f"📄 {thread_name}",
+                    description=f"Resume conversation from {thread.get('createdAt', 'Unknown')}"
+                )
+            )
+        
+        if actions:
+            welcome_message += "\n\n🔄 **Quick Resume:**"
+            await cl.Message(
+                content=welcome_message,
+                actions=actions
+            ).send()
+        else:
+            await cl.Message(content=welcome_message).send()
+    else:
+        welcome_message += "🆕 This is your first conversation. Everything will be automatically saved!"
+        await cl.Message(content=welcome_message).send()
+    
+    # Initialize message counter for thread naming
+    cl.user_session.set("message_count", 0)
+
+@cl.on_message
+async def on_message(message: cl.Message):
+    """Handle incoming messages with enhanced features"""
+    
+    # Increment message count
+    count = cl.user_session.get("message_count", 0)
+    cl.user_session.set("message_count", count + 1)
+    
+    # Auto-name thread based on first message
+    if count == 0 and hasattr(cl.context.session, 'thread_id'):
+        thread_id = cl.context.session.thread_id
+        if thread_id:
+            await auto_name_thread(thread_id, message.content)
+    
+    # Simulate thinking with a spinner
+    async with cl.Step(name="thinking", type="tool") as step:
+        step.input = message.content
+        
+        # Your AI logic here - replace with actual AI integration
+        # For example: OpenAI, Anthropic, local models, etc.
+        
+        # Simulate processing time
+        import asyncio
+        await asyncio.sleep(1)
+        
+        # Generate response (replace with your AI logic)
+        response = generate_ai_response(message.content)
+        
+        step.output = response
+    
+    # Send the response
+    await cl.Message(
+        content=response,
+        elements=[]  # Add any file attachments here
+    ).send()
+
+def generate_ai_response(user_input: str) -> str:
+    """
+    Replace this with your actual AI integration:
+    - OpenAI GPT
+    - Anthropic Claude  
+    - Local models
+    - LangChain chains
+    - etc.
+    """
+    
+    # Simple echo response for demo
+    responses = [
+        f"I understand you said: '{user_input}'. How can I help you further?",
+        f"That's interesting! Regarding '{user_input}', I'd like to know more.",
+        f"Thanks for sharing that. About '{user_input}' - what would you like to explore?",
+        f"I see you mentioned '{user_input}'. Let me think about that...",
+    ]
+    
+    import random
+    return random.choice(responses)
+
+async def auto_name_thread(thread_id: str, first_message: str):
+    """Automatically name thread based on first message"""
+    try:
+        data_layer = get_data_layer()
+        
+        # Generate meaningful name from first message
+        name = first_message.strip()
+        if len(name) > 60:
+            name = name[:60] + "..."
+        
+        # Clean up the name
+        name = name.replace('\n', ' ').replace('\r', ' ')
+        name = ' '.join(name.split())  # Remove extra whitespace
+        
+        if not name:
+            name = f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        
+        await data_layer.update_thread(
+            thread_id=thread_id,
+            name=name,
+            metadata={
+                "auto_named": True,
+                "created_from_message": first_message[:100],
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        )
+    except Exception as e:
+        print(f"Error auto-naming thread: {e}")
+
+@cl.action_callback("resume_conversation")
+async def resume_conversation(action: cl.Action):
+    """Resume a previous conversation"""
+    thread_id = action.value
+    data_layer = get_data_layer()
+    
+    try:
+        thread = await data_layer.get_thread(thread_id)
+        
+        if thread and thread.get("steps"):
+            await cl.Message(
+                content=f"📖 **Resuming conversation:** {thread.get('name', 'Untitled')}\n\n"
+                       f"🕒 Started: {thread.get('createdAt', 'Unknown')}\n"
+                       f"💬 Messages: {len(thread['steps'])}\n\n"
+                       "Here's your conversation history:"
+            ).send()
+            
+            # Display conversation history
+            for step in thread["steps"][-10:]:  # Show last 10 messages
+                if step.get("input"):
+                    await cl.Message(
+                        content=step["input"],
+                        author="You",
+                        indent=1
+                    ).send()
+                
+                if step.get("output"):
+                    await cl.Message(
+                        content=step["output"],
+                        author="Assistant",
+                        indent=1
+                    ).send()
+            
+            if len(thread["steps"]) > 10:
+                await cl.Message(
+                    content=f"... ({len(thread['steps']) - 10} earlier messages not shown)"
+                ).send()
+            
+            await cl.Message(
+                content="✅ **Conversation resumed!** You can continue where you left off."
+            ).send()
+            
+        else:
+            await cl.Message(
+                content="❌ Sorry, I couldn't find that conversation or it appears to be empty."
+            ).send()
+            
+    except Exception as e:
+        await cl.Message(
+            content=f"❌ Error resuming conversation: {str(e)}"
+        ).send()
+
+@cl.on_chat_end
+async def on_chat_end():
+    """Clean up when chat ends"""
+    print("Chat session ended")
+
+@cl.on_stop
+async def on_stop():
+    """Clean up when app stops"""
+    print("App stopping")
+
+# Optional: Add custom CSS for better chat history UI
+@cl.on_settings_update
+async def setup_agent(settings):
+    """Handle settings updates"""
+    print("Settings updated:", settings)
+
+# Health check endpoint for production
+@cl.header_auth_callback
+def header_auth_callback(headers) -> cl.User:
+    """
+    Custom header authentication
+    You can replace this with your own authentication logic
+    """
+    user_id = headers.get("X-User-ID")
+    
+    if not user_id:
+        # Allow anonymous users
+        user_id = f"anon_{uuid.uuid4().hex[:8]}"
+    
+    return cl.User(
+        identifier=user_id,
+        metadata={"auth_method": "header", "login_time": datetime.utcnow().isoformat()}
+    )
+
+if __name__ == "__main__":
+    # For development
+    print("Starting Chainlit app with chat history...")
+    print("Chat history will be saved to: chainlit_chat_history.db")
+    print("Access the app at: http://localhost:8000")
