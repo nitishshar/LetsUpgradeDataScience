@@ -1,0 +1,23 @@
+@cl.set_starters
+async def set_starters():
+    return [
+        cl.Starter(
+            label="Explain Machine Learning",
+            message="Can you explain what machine learning is and give me some examples?",
+            icon="/public/ml-icon.png",  # Optional: custom icon
+        ),
+        cl.Starter(
+            label="Code Review Help",
+            message="I have some Python code that needs reviewing. Can you help me improve it?",
+            icon="/public/code-icon.png",
+        ),
+        cl.Starter(
+            label="Data Analysis Task",
+            message="I need help analyzing a dataset. What's the best approach?",
+            icon="/public/data-icon.png",
+        ),
+        cl.Starter(
+            label="Quick Question",
+            message="I have a quick technical question about web development.",
+        ),
+    ]
