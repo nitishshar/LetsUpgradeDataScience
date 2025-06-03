@@ -1,0 +1,88 @@
+# Method 1: Using chainlit.md file for custom branding
+# Create a file called 'chainlit.md' in your project root
+
+# chainlit.md content:
+"""
+# Welcome to My Custom Chat Assistant
+
+Your personalized AI assistant is ready to help you with any questions or tasks.
+
+## Features
+- Intelligent conversations
+- File analysis
+- Code assistance
+- And much more!
+"""
+
+# Method 2: Python configuration with custom CSS
+import chainlit as cl
+
+# Custom CSS to hide logo and add welcome text
+custom_css = """
+/* Hide the original Chainlit logo */
+.MuiAppBar-root .MuiToolbar-root img {
+    display: none !important;
+}
+
+/* Add custom welcome text in header */
+.MuiAppBar-root .MuiToolbar-root::before {
+    content: "My Custom AI Assistant";
+    color: white;
+    font-size: 1.5rem;
+    font-weight: bold;
+    margin-left: 16px;
+}
+
+/* Alternative: Replace entire header content */
+.MuiAppBar-root .MuiToolbar-root {
+    justify-content: center;
+}
+
+.MuiAppBar-root .MuiToolbar-root::after {
+    content: "🤖 Welcome to Your Personal AI Chat";
+    color: white;
+    font-size: 1.2rem;
+    font-weight: 500;
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+}
+"""
+
+@cl.on_chat_start
+async def start():
+    # Inject custom CSS
+    await cl.Html(
+        content=f"<style>{custom_css}</style>",
+        display="side"
+    ).send()
+    
+    # Send welcome message
+    await cl.Message(
+        content="👋 Welcome! I'm your personal AI assistant. How can I help you today?",
+    ).send()
+
+@cl.on_message
+async def main(message: cl.Message):
+    response = f"You said: {message.content}"
+    await cl.Message(content=response).send()
+
+
+
+
+ cl.Starter(
+            label="💡 Ask a Question",
+            message="I have a question about...",
+        ),
+        cl.Starter(
+            label="💻 Code Help",
+            message="Can you help me with this code?",
+        ),
+        cl.Starter(
+            label="📄 Analyze Document",
+            message="Please analyze this document for me",
+        ),
+        cl.Starter(
+            label="✨ Creative Task",
+            message="Help me brainstorm ideas for...",
+        ),
