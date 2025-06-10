@@ -1,0 +1,653 @@
+# models.py - SQLAlchemy models
+from sqlalchemy import create_engine, Column, String, Text, DateTime, ForeignKey, JSON
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
+from datetime import datetime
+import json
+
+Base = declarative_base()
+
+
+class User(Base):
+    __tablename__ = 'users'
+    
+    id = Column(String, primary_key=True)
+    identifier = Column(String, unique=True, nullable=False)
+    display_name = Column(String)
+    metadata = Column(JSON, default=lambda: {})
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    threads = relationship("Thread", back_populates="user", cascade="all, delete-orphan")
+
+
+class Thread(Base):
+    __tablename__ = 'threads'
+    
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    user_id = Column(String, ForeignKey('users.id'), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    metadata = Column(JSON, default=lambda: {})
+    
+    # Relationships
+    user = relationship("User", back_populates="threads")
+    steps = relationship("Step", back_populates="thread", cascade="all, delete-orphan")
+    elements = relationship("Element", back_populates="thread", cascade="all, delete-orphan")
+
+
+class Step(Base):
+    __tablename__ = 'steps'
+    
+    id = Column(String, primary_key=True)
+    thread_id = Column(String, ForeignKey('threads.id'), nullable=False)
+    parent_id = Column(String, nullable=True)
+    type = Column(String, nullable=False)
+    name = Column(String)
+    input = Column(Text)
+    output = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    start_time = Column(DateTime)
+    end_time = Column(DateTime)
+    metadata = Column(JSON, default=lambda: {})
+    
+    # Relationships
+    thread = relationship("Thread", back_populates="steps")
+
+
+class Element(Base):
+    __tablename__ = 'elements'
+    
+    id = Column(String, primary_key=True)
+    thread_id = Column(String, ForeignKey('threads.id'), nullable=False)
+    for_id = Column(String)  # Associated step ID
+    type = Column(String, nullable=False)
+    name = Column(String)
+    url = Column(String)
+    content = Column(Text)
+    metadata = Column(JSON, default=lambda: {})
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    thread = relationship("Thread", back_populates="elements")
+
+
+# data_layer.py - SQLAlchemy-based data layer
+import asyncio
+from typing import Dict, List, Optional, Any
+from sqlalchemy import create_engine, desc
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.exc import SQLAlchemyError
+from chainlit.data import BaseDataLayer
+from chainlit.element import Element as ChainlitElement
+from chainlit.step import StepDict
+from chainlit.user import PersistedUser, User as ChainlitUser
+import chainlit as cl
+from models import Base, User, Thread, Step, Element
+from datetime import datetime
+import uuid
+
+
+class SQLAlchemyDataLayer(BaseDataLayer):
+    """SQLAlchemy-based data layer for Chainlit chat persistence"""
+    
+    def __init__(self, database_url: str = "sqlite:///chainlit_chat.db"):
+        self.database_url = database_url
+        self.engine = create_engine(
+            database_url, 
+            echo=False,  # Set to True for SQL debugging
+            pool_pre_ping=True,
+            connect_args={"check_same_thread": False} if "sqlite" in database_url else {}
+        )
+        
+        # Create tables
+        Base.metadata.create_all(self.engine)
+        
+        # Create session factory
+        self.SessionLocal = sessionmaker(bind=self.engine)
+    
+    def get_session(self) -> Session:
+        """Get a database session"""
+        return self.SessionLocal()
+    
+    async def create_user(self, user: ChainlitUser) -> Optional[PersistedUser]:
+        """Create a new user"""
+        session = self.get_session()
+        try:
+            # Check if user already exists
+            existing_user = session.query(User).filter_by(identifier=user.identifier).first()
+            if existing_user:
+                return PersistedUser(
+                    id=existing_user.id,
+                    identifier=existing_user.identifier,
+                    display_name=existing_user.display_name,
+                    metadata=existing_user.metadata or {}
+                )
+            
+            # Create new user
+            db_user = User(
+                id=user.id,
+                identifier=user.identifier,
+                display_name=getattr(user, 'display_name', None),
+                metadata=getattr(user, 'metadata', {})
+            )
+            
+            session.add(db_user)
+            session.commit()
+            
+            return PersistedUser(
+                id=db_user.id,
+                identifier=db_user.identifier,
+                display_name=db_user.display_name,
+                metadata=db_user.metadata or {}
+            )
+            
+        except SQLAlchemyError as e:
+            session.rollback()
+            print(f"Error creating user: {e}")
+            return None
+        finally:
+            session.close()
+    
+    async def get_user(self, identifier: str) -> Optional[PersistedUser]:
+        """Get user by identifier"""
+        session = self.get_session()
+        try:
+            user = session.query(User).filter_by(identifier=identifier).first()
+            if user:
+                return PersistedUser(
+                    id=user.id,
+                    identifier=user.identifier,
+                    display_name=user.display_name,
+                    metadata=user.metadata or {}
+                )
+            return None
+        except SQLAlchemyError as e:
+            print(f"Error getting user: {e}")
+            return None
+        finally:
+            session.close()
+    
+    async def create_thread(
+        self,
+        thread_id: str,
+        name: Optional[str] = None,
+        user_id: Optional[str] = None,
+        metadata: Optional[Dict] = None
+    ) -> None:
+        """Create a new thread/conversation"""
+        session = self.get_session()
+        try:
+            # Check if thread exists, update if it does
+            existing_thread = session.query(Thread).filter_by(id=thread_id).first()
+            if existing_thread:
+                if name:
+                    existing_thread.name = name
+                if metadata:
+                    existing_thread.metadata = metadata
+                session.commit()
+                return
+            
+            # Create new thread
+            thread = Thread(
+                id=thread_id,
+                name=name or f"Chat {thread_id[:8]}",
+                user_id=user_id,
+                metadata=metadata or {}
+            )
+            
+            session.add(thread)
+            session.commit()
+            
+        except SQLAlchemyError as e:
+            session.rollback()
+            print(f"Error creating thread: {e}")
+        finally:
+            session.close()
+    
+    async def get_thread(self, thread_id: str) -> Optional[Dict]:
+        """Get thread by ID"""
+        session = self.get_session()
+        try:
+            thread = session.query(Thread).filter_by(id=thread_id).first()
+            if thread:
+                return {
+                    "id": thread.id,
+                    "name": thread.name,
+                    "user_id": thread.user_id,
+                    "created_at": thread.created_at.isoformat() if thread.created_at else None,
+                    "metadata": thread.metadata or {}
+                }
+            return None
+        except SQLAlchemyError as e:
+            print(f"Error getting thread: {e}")
+            return None
+        finally:
+            session.close()
+    
+    async def list_threads(
+        self,
+        pagination: Optional[Dict] = None,
+        filters: Optional[Dict] = None
+    ) -> List[Dict]:
+        """List all threads with optional pagination and filters"""
+        session = self.get_session()
+        try:
+            query = session.query(Thread)
+            
+            # Apply filters
+            if filters:
+                if filters.get("user_id"):
+                    query = query.filter(Thread.user_id == filters["user_id"])
+            
+            # Order by creation date
+            query = query.order_by(desc(Thread.created_at))
+            
+            # Apply pagination
+            if pagination:
+                limit = pagination.get("limit", 20)
+                offset = pagination.get("offset", 0)
+                query = query.limit(limit).offset(offset)
+            
+            threads = query.all()
+            
+            return [
+                {
+                    "id": thread.id,
+                    "name": thread.name,
+                    "user_id": thread.user_id,
+                    "created_at": thread.created_at.isoformat() if thread.created_at else None,
+                    "metadata": thread.metadata or {}
+                }
+                for thread in threads
+            ]
+            
+        except SQLAlchemyError as e:
+            print(f"Error listing threads: {e}")
+            return []
+        finally:
+            session.close()
+    
+    async def create_step(self, step_dict: StepDict) -> None:
+        """Create/update a step (message)"""
+        session = self.get_session()
+        try:
+            # Check if step exists
+            existing_step = session.query(Step).filter_by(id=step_dict.get("id")).first()
+            if existing_step:
+                # Update existing step
+                existing_step.output = step_dict.get("output")
+                existing_step.end_time = datetime.fromisoformat(step_dict["end"]) if step_dict.get("end") else None
+                existing_step.metadata = step_dict.get("metadata", {})
+            else:
+                # Create new step
+                step = Step(
+                    id=step_dict.get("id"),
+                    thread_id=step_dict.get("threadId"),
+                    parent_id=step_dict.get("parentId"),
+                    type=step_dict.get("type"),
+                    name=step_dict.get("name"),
+                    input=step_dict.get("input"),
+                    output=step_dict.get("output"),
+                    created_at=datetime.fromisoformat(step_dict["createdAt"]) if step_dict.get("createdAt") else datetime.utcnow(),
+                    start_time=datetime.fromisoformat(step_dict["start"]) if step_dict.get("start") else None,
+                    end_time=datetime.fromisoformat(step_dict["end"]) if step_dict.get("end") else None,
+                    metadata=step_dict.get("metadata", {})
+                )
+                session.add(step)
+            
+            session.commit()
+            
+        except SQLAlchemyError as e:
+            session.rollback()
+            print(f"Error creating step: {e}")
+        finally:
+            session.close()
+    
+    async def get_thread_author(self, thread_id: str) -> Optional[str]:
+        """Get the author/user_id of a thread"""
+        thread = await self.get_thread(thread_id)
+        return thread.get("user_id") if thread else None
+    
+    async def delete_thread(self, thread_id: str) -> None:
+        """Delete a thread and all its messages"""
+        session = self.get_session()
+        try:
+            # SQLAlchemy will handle cascade deletes automatically
+            thread = session.query(Thread).filter_by(id=thread_id).first()
+            if thread:
+                session.delete(thread)
+                session.commit()
+        except SQLAlchemyError as e:
+            session.rollback()
+            print(f"Error deleting thread: {e}")
+        finally:
+            session.close()
+    
+    async def list_steps(self, thread_id: str) -> List[StepDict]:
+        """Get all steps/messages for a thread"""
+        session = self.get_session()
+        try:
+            steps = session.query(Step).filter_by(thread_id=thread_id).order_by(Step.created_at).all()
+            
+            return [
+                {
+                    "id": step.id,
+                    "threadId": step.thread_id,
+                    "parentId": step.parent_id,
+                    "type": step.type,
+                    "name": step.name,
+                    "input": step.input,
+                    "output": step.output,
+                    "createdAt": step.created_at.isoformat() if step.created_at else None,
+                    "start": step.start_time.isoformat() if step.start_time else None,
+                    "end": step.end_time.isoformat() if step.end_time else None,
+                    "metadata": step.metadata or {}
+                }
+                for step in steps
+            ]
+            
+        except SQLAlchemyError as e:
+            print(f"Error listing steps: {e}")
+            return []
+        finally:
+            session.close()
+    
+    async def create_element(self, element: ChainlitElement) -> None:
+        """Store an element (file, image, etc.)"""
+        session = self.get_session()
+        try:
+            db_element = Element(
+                id=element.id,
+                thread_id=element.thread_id,
+                for_id=element.for_id,
+                type=element.type,
+                name=element.name,
+                url=getattr(element, 'url', None),
+                content=getattr(element, 'content', None),
+                metadata=getattr(element, 'metadata', {})
+            )
+            
+            session.add(db_element)
+            session.commit()
+            
+        except SQLAlchemyError as e:
+            session.rollback()
+            print(f"Error creating element: {e}")
+        finally:
+            session.close()
+    
+    async def get_elements(self, thread_id: str) -> List[Dict]:
+        """Get all elements for a thread"""
+        session = self.get_session()
+        try:
+            elements = session.query(Element).filter_by(thread_id=thread_id).all()
+            
+            return [
+                {
+                    "id": element.id,
+                    "thread_id": element.thread_id,
+                    "for_id": element.for_id,
+                    "type": element.type,
+                    "name": element.name,
+                    "url": element.url,
+                    "content": element.content,
+                    "metadata": element.metadata or {},
+                    "created_at": element.created_at.isoformat() if element.created_at else None
+                }
+                for element in elements
+            ]
+            
+        except SQLAlchemyError as e:
+            print(f"Error getting elements: {e}")
+            return []
+        finally:
+            session.close()
+
+
+# app.py - Main Chainlit application
+import chainlit as cl
+from data_layer import SQLAlchemyDataLayer
+from datetime import datetime
+import uuid
+
+
+# Initialize the custom data layer
+data_layer = SQLAlchemyDataLayer("sqlite:///my_chat_app.db")
+cl.data_layer = data_layer
+
+
+@cl.on_chat_start
+async def start():
+    """Initialize chat session"""
+    # Get or create user
+    user = cl.user_session.get("user")
+    if not user:
+        # Create a simple user for demo
+        user_id = str(uuid.uuid4())
+        user = await data_layer.create_user(
+            cl.User(id=user_id, identifier=f"user-{user_id[:8]}")
+        )
+        cl.user_session.set("user", user)
+    
+    # Check if we're resuming a specific thread
+    thread_id = cl.user_session.get("thread_id")
+    if not thread_id:
+        # Create new thread
+        thread_id = str(uuid.uuid4())
+        await data_layer.create_thread(
+            thread_id=thread_id,
+            name="New Chat",
+            user_id=user.id if user else None
+        )
+        cl.user_session.set("thread_id", thread_id)
+        
+        await cl.Message(
+            content="Welcome! This is a new chat session. All messages will be saved.",
+            author="System"
+        ).send()
+    else:
+        # Resuming existing thread
+        thread = await data_layer.get_thread(thread_id)
+        if thread:
+            await cl.Message(
+                content=f"Resuming chat: {thread['name']}",
+                author="System"
+            ).send()
+
+
+@cl.on_message
+async def main(message: cl.Message):
+    """Handle incoming messages"""
+    thread_id = cl.user_session.get("thread_id")
+    is_resuming = cl.user_session.get("is_resuming", False)
+    
+    # Skip saving if we're in the middle of resuming to prevent duplicates
+    if is_resuming:
+        return
+    
+    # Save user message
+    user_step = {
+        "id": str(uuid.uuid4()),
+        "threadId": thread_id,
+        "type": "user_message",
+        "name": "User",
+        "input": message.content,
+        "output": message.content,
+        "createdAt": datetime.utcnow().isoformat()
+    }
+    await data_layer.create_step(user_step)
+    
+    # Generate response
+    response = f"You said: {message.content}\n\nThis conversation is persisted using SQLAlchemy! Thread ID: {thread_id[:8]}"
+    
+    # Save assistant response
+    assistant_step = {
+        "id": str(uuid.uuid4()),
+        "threadId": thread_id,
+        "type": "assistant_message",
+        "name": "Assistant",
+        "input": message.content,
+        "output": response,
+        "createdAt": datetime.utcnow().isoformat()
+    }
+    await data_layer.create_step(assistant_step)
+    
+    # Send response
+    await cl.Message(content=response).send()
+
+
+@cl.on_chat_resume
+async def resume(thread_id: str):
+    """Resume a chat thread"""
+    cl.user_session.set("thread_id", thread_id)
+    cl.user_session.set("is_resuming", True)  # Flag to prevent duplicate saving
+    
+    # Get thread info
+    thread = await data_layer.get_thread(thread_id)
+    if not thread:
+        await cl.Message(
+            content="Thread not found!",
+            author="System"
+        ).send()
+        return
+    
+    # Load conversation history
+    steps = await data_layer.list_steps(thread_id)
+    
+    if steps:
+        # Create message elements from stored steps without sending them as new messages
+        messages = []
+        for step in steps:
+            if step.get("output") and step.get("type") in ["user_message", "assistant_message"]:
+                # Create message object but don't send it - just store for context
+                message_data = {
+                    "id": step["id"],
+                    "content": step["output"],
+                    "author": step.get("name", "User"),
+                    "created_at": step.get("createdAt"),
+                    "type": step.get("type")
+                }
+                messages.append(message_data)
+        
+        # Store the conversation history in session for reference
+        cl.user_session.set("conversation_history", messages)
+        
+        # Only send a brief resume notification
+        await cl.Message(
+            content=f"✅ Resumed chat: **{thread['name']}** ({len(messages)} previous messages loaded)",
+            author="System"
+        ).send()
+    else:
+        await cl.Message(
+            content=f"✅ Resumed chat: **{thread['name']}** (no previous messages)",
+            author="System"
+        ).send()
+    
+    # Clear the resuming flag after a short delay
+    cl.user_session.set("is_resuming", False)
+
+
+# chat_manager.py - Enhanced utility functions
+from sqlalchemy import func
+from models import Thread, Step, User
+
+
+class ChatManager:
+    """Enhanced utility class for managing chat sessions"""
+    
+    def __init__(self, data_layer: SQLAlchemyDataLayer):
+        self.data_layer = data_layer
+    
+    async def get_user_threads(self, user_id: str, limit: int = 10):
+        """Get recent threads for a user with message counts"""
+        session = self.data_layer.get_session()
+        try:
+            threads = session.query(
+                Thread,
+                func.count(Step.id).label('message_count')
+            ).outerjoin(Step).filter(
+                Thread.user_id == user_id
+            ).group_by(Thread.id).order_by(
+                Thread.created_at.desc()
+            ).limit(limit).all()
+            
+            return [
+                {
+                    "id": thread.Thread.id,
+                    "name": thread.Thread.name,
+                    "created_at": thread.Thread.created_at.isoformat(),
+                    "message_count": thread.message_count,
+                    "metadata": thread.Thread.metadata
+                }
+                for thread in threads
+            ]
+        finally:
+            session.close()
+    
+    async def create_new_chat(self, user_id: str, name: str = None):
+        """Create a new chat thread"""
+        thread_id = str(uuid.uuid4())
+        await self.data_layer.create_thread(
+            thread_id=thread_id,
+            name=name or f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            user_id=user_id
+        )
+        return thread_id
+    
+    async def search_messages(self, user_id: str, query: str, limit: int = 20):
+        """Search messages across all user threads"""
+        session = self.data_layer.get_session()
+        try:
+            results = session.query(Step, Thread.name).join(Thread).filter(
+                Thread.user_id == user_id,
+                Step.output.contains(query)
+            ).order_by(Step.created_at.desc()).limit(limit).all()
+            
+            return [
+                {
+                    "step_id": step.Step.id,
+                    "thread_id": step.Step.thread_id,
+                    "thread_name": step.name,
+                    "content": step.Step.output,
+                    "created_at": step.Step.created_at.isoformat(),
+                    "type": step.Step.type
+                }
+                for step in results
+            ]
+        finally:
+            session.close()
+    
+    async def get_thread_stats(self, thread_id: str):
+        """Get statistics for a thread"""
+        session = self.data_layer.get_session()
+        try:
+            stats = session.query(
+                func.count(Step.id).label('total_messages'),
+                func.count(Step.id).filter(Step.type == 'user_message').label('user_messages'),
+                func.count(Step.id).filter(Step.type == 'assistant_message').label('assistant_messages'),
+                func.min(Step.created_at).label('first_message'),
+                func.max(Step.created_at).label('last_message')
+            ).filter(Step.thread_id == thread_id).first()
+            
+            return {
+                "total_messages": stats.total_messages or 0,
+                "user_messages": stats.user_messages or 0,
+                "assistant_messages": stats.assistant_messages or 0,
+                "first_message": stats.first_message.isoformat() if stats.first_message else None,
+                "last_message": stats.last_message.isoformat() if stats.last_message else None
+            }
+        finally:
+            session.close()
+
+
+# requirements.txt content:
+"""
+chainlit==2.5.5
+sqlalchemy>=1.4.0
+"""
+
+# Usage example:
+if __name__ == "__main__":
+    # To run: chainlit run app.py
+    pass
