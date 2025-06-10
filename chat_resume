@@ -1,3 +1,28 @@
+@cl.on_chat_resume
+async def on_chat_resume(thread: cl.ThreadDict):
+    # Get steps from the thread
+    steps = thread.get("steps", [])
+    
+    # Reconstruct the conversation
+    for step in steps:
+        if step.get("output"):
+            # Determine message type and author
+            if step.get("type") == "user_message":
+                # User message
+                message = cl.Message(
+                    content=step["output"],
+                    author="User"
+                )
+            else:
+                # Assistant message (could be type "run" or "assistant_message")
+                message = cl.Message(
+                    content=step["output"],
+                    author="Assistant"
+                )
+            
+            # Send without waiting to avoid adding to steps
+            message.send()  # Note: no await here in 2.5.5
+
 This is a common issue with Chainlit chat resume functionality. The problem is likely that you're not properly reconstructing the assistant messages in the correct format that Chainlit expects.
 
 Here are the key things to check:
