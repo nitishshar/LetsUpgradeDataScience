@@ -1,0 +1,113 @@
+This is a common issue with Chainlit chat resume functionality. The problem is likely that you're not properly reconstructing the assistant messages in the correct format that Chainlit expects.
+
+Here are the key things to check:
+
+## 1. Message Format
+Make sure you're creating the assistant messages with the correct format:
+
+```python
+import chainlit as cl
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: cl.ThreadDict):
+    steps = thread.get("steps", [])
+    
+    for step in steps:
+        if step.get("type") == "user_message":
+            # User message
+            await cl.Message(
+                content=step.get("output", ""),
+                author="User"
+            ).send()
+        elif step.get("type") == "assistant_message":
+            # Assistant message - this is crucial
+            await cl.Message(
+                content=step.get("output", ""),
+                author="Assistant"  # or your bot name
+            ).send()
+```
+
+## 2. Check Step Types
+Verify what types your steps actually have:
+
+```python
+@cl.on_chat_resume
+async def on_chat_resume(thread: cl.ThreadDict):
+    steps = thread.get("steps", [])
+    
+    for step in steps:
+        print(f"Step type: {step.get('type')}")
+        print(f"Step content: {step.get('output', '')}")
+        print(f"Step author: {step.get('name', 'Unknown')}")
+        print("---")
+```
+
+## 3. Common Issues and Solutions
+
+**Issue**: Assistant messages not showing up
+**Solution**: Make sure you're using the correct step identification:
+
+```python
+@cl.on_chat_resume
+async def on_chat_resume(thread: cl.ThreadDict):
+    for step in thread.get("steps", []):
+        # Check multiple possible indicators for assistant messages
+        is_assistant = (
+            step.get("type") == "assistant_message" or
+            step.get("name") == "Assistant" or
+            step.get("author") == "Assistant" or
+            step.get("type") == "run"  # Sometimes assistant messages are type "run"
+        )
+        
+        if step.get("type") == "user_message":
+            await cl.Message(
+                content=step.get("output", ""),
+                author="User"
+            ).send()
+        elif is_assistant:
+            await cl.Message(
+                content=step.get("output", ""),
+                author="Assistant"
+            ).send()
+```
+
+## 4. Alternative Approach
+If the above doesn't work, try this more explicit approach:
+
+```python
+@cl.on_chat_resume
+async def on_chat_resume(thread: cl.ThreadDict):
+    messages = []
+    
+    for step in thread.get("steps", []):
+        if step.get("output"):  # Only process steps with content
+            # Determine if it's user or assistant based on your logic
+            if step.get("type") == "user_message":
+                messages.append(cl.Message(
+                    content=step["output"],
+                    author="User"
+                ))
+            else:  # Assume everything else is assistant
+                messages.append(cl.Message(
+                    content=step["output"],
+                    author="Assistant"
+                ))
+    
+    # Send all messages
+    for msg in messages:
+        await msg.send()
+```
+
+## 5. Debug the Thread Structure
+Add this to see exactly what you're working with:
+
+```python
+import json
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: cl.ThreadDict):
+    print("Full thread structure:")
+    print(json.dumps(thread, indent=2))
+```
+
+The key is ensuring that both user and assistant messages are properly reconstructed with the right `author` field and content. Can you share what the step structure looks like when you print it out? That would help identify the exact issue.
