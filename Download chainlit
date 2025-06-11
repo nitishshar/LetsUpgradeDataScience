@@ -1,0 +1,270 @@
+import chainlit as cl
+import pandas as pd
+import io
+import re
+from datetime import datetime
+from typing import Optional, List, Dict, Any
+
+async def detect_and_handle_table_response(llm_response: str, message_obj: cl.Message):
+    """
+    Detect if LLM response contains table data and add download options
+    """
+    
+    # Try different table detection methods
+    df = None
+    
+    # Method 1: Detect markdown tables
+    df = parse_markdown_table(llm_response)
+    
+    # Method 2: Detect pipe-separated tables (if markdown didn't work)
+    if df is None:
+        df = parse_pipe_table(llm_response)
+    
+    # Method 3: Detect CSV-like content
+    if df is None:
+        df = parse_csv_like_content(llm_response)
+    
+    # Method 4: Detect structured data patterns
+    if df is None:
+        df = parse_structured_data(llm_response)
+    
+    # If we found a table, add download options
+    if df is not None and not df.empty:
+        await add_download_options(df, message_obj)
+    
+    return df is not None
+
+def parse_markdown_table(text: str) -> Optional[pd.DataFrame]:
+    """Parse markdown table format"""
+    try:
+        # Look for markdown table pattern
+        lines = text.split('\n')
+        table_lines = []
+        in_table = False
+        
+        for line in lines:
+            line = line.strip()
+            if '|' in line and not line.startswith('|--'):
+                table_lines.append(line)
+                in_table = True
+            elif in_table and not line:
+                break
+        
+        if len(table_lines) < 2:
+            return None
+        
+        # Parse header and data
+        headers = [col.strip() for col in table_lines[0].split('|') if col.strip()]
+        data = []
+        
+        for line in table_lines[1:]:
+            if '|--' in line or '|:-' in line:  # Skip separator line
+                continue
+            row = [col.strip() for col in line.split('|') if col.strip()]
+            if len(row) == len(headers):
+                data.append(row)
+        
+        if data:
+            return pd.DataFrame(data, columns=headers)
+            
+    except Exception as e:
+        print(f"Error parsing markdown table: {e}")
+    
+    return None
+
+def parse_pipe_table(text: str) -> Optional[pd.DataFrame]:
+    """Parse pipe-separated table format"""
+    try:
+        lines = text.split('\n')
+        table_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            if line.count('|') >= 2:  # At least 2 pipes for a table row
+                table_lines.append(line)
+        
+        if len(table_lines) < 2:
+            return None
+        
+        # Parse first line as headers
+        headers = [col.strip() for col in table_lines[0].split('|') if col.strip()]
+        data = []
+        
+        for line in table_lines[1:]:
+            row = [col.strip() for col in line.split('|') if col.strip()]
+            if len(row) == len(headers):
+                data.append(row)
+        
+        if data:
+            return pd.DataFrame(data, columns=headers)
+            
+    except Exception as e:
+        print(f"Error parsing pipe table: {e}")
+    
+    return None
+
+def parse_csv_like_content(text: str) -> Optional[pd.DataFrame]:
+    """Parse CSV-like content"""
+    try:
+        # Look for comma-separated values with multiple rows
+        lines = text.split('\n')
+        csv_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            if line.count(',') >= 2:  # At least 2 commas
+                csv_lines.append(line)
+        
+        if len(csv_lines) < 2:
+            return None
+        
+        # Try to parse as CSV
+        csv_text = '\n'.join(csv_lines)
+        df = pd.read_csv(io.StringIO(csv_text))
+        
+        if len(df) > 0:
+            return df
+            
+    except Exception as e:
+        print(f"Error parsing CSV content: {e}")
+    
+    return None
+
+def parse_structured_data(text: str) -> Optional[pd.DataFrame]:
+    """Parse structured data patterns (like JSON-like or key-value pairs)"""
+    try:
+        # Look for patterns like "Name: Value" repeated in rows
+        lines = text.split('\n')
+        data_rows = []
+        current_row = {}
+        
+        for line in lines:
+            line = line.strip()
+            if ':' in line and not line.startswith('#'):
+                key, value = line.split(':', 1)
+                current_row[key.strip()] = value.strip()
+            elif current_row and (not line or line.startswith('-')):
+                data_rows.append(current_row.copy())
+                current_row = {}
+        
+        if current_row:
+            data_rows.append(current_row)
+        
+        if len(data_rows) > 1:
+            return pd.DataFrame(data_rows)
+            
+    except Exception as e:
+        print(f"Error parsing structured data: {e}")
+    
+    return None
+
+async def add_download_options(df: pd.DataFrame, original_message: cl.Message):
+    """Add download options for the detected table"""
+    
+    # Clean the dataframe
+    df = clean_dataframe(df)
+    
+    # Generate timestamp for unique filenames
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Create CSV file
+    csv_buffer = io.StringIO()
+    df.to_csv(csv_buffer, index=False)
+    csv_content = csv_buffer.getvalue().encode('utf-8')
+    
+    # Create Excel file
+    excel_buffer = io.BytesIO()
+    df.to_excel(excel_buffer, index=False, engine='openpyxl')
+    excel_content = excel_buffer.getvalue()
+    
+    # Create downloadable files
+    csv_file = cl.File(
+        name=f"table_data_{timestamp}.csv",
+        content=csv_content,
+        display="inline"
+    )
+    
+    excel_file = cl.File(
+        name=f"table_data_{timestamp}.xlsx",
+        content=excel_content,
+        display="inline"
+    )
+    
+    # Send download options
+    await cl.Message(
+        content="📊 **Table detected!** Download options:",
+        elements=[csv_file, excel_file]
+    ).send()
+
+def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Clean and prepare dataframe for download"""
+    # Remove empty rows and columns
+    df = df.dropna(how='all')
+    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+    
+    # Convert numeric strings to numbers where possible
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            # Try to convert to numeric
+            numeric_series = pd.to_numeric(df[col], errors='ignore')
+            if not numeric_series.equals(df[col]):
+                df[col] = numeric_series
+    
+    return df
+
+@cl.on_message
+async def main(message: cl.Message):
+    """Main message handler with table detection"""
+    
+    # Your existing LLM call logic here
+    # This is just an example - replace with your actual LLM integration
+    
+    # Example: Simulate LLM response with table data
+    llm_response = """
+    Here's the sales data you requested:
+    
+    | Product | Sales | Revenue |
+    |---------|-------|---------|
+    | Widget A | 150 | $15,000 |
+    | Widget B | 200 | $20,000 |
+    | Widget C | 100 | $12,000 |
+    
+    The data shows strong performance across all products.
+    """
+    
+    # Send the original LLM response
+    response_message = await cl.Message(content=llm_response).send()
+    
+    # Check if response contains table data and add download options
+    table_detected = await detect_and_handle_table_response(llm_response, response_message)
+    
+    if table_detected:
+        print("Table detected and download options added!")
+
+# Alternative: Hook into your existing LLM response handler
+async def handle_llm_response_with_table_detection(llm_response: str):
+    """
+    Use this function to wrap your existing LLM response handling
+    """
+    
+    # Send the original response
+    response_message = await cl.Message(content=llm_response).send()
+    
+    # Detect and handle tables
+    await detect_and_handle_table_response(llm_response, response_message)
+    
+    return response_message
+
+# Example usage with different LLM integrations:
+
+# For OpenAI/ChatGPT responses:
+async def handle_openai_response(response_text: str):
+    await handle_llm_response_with_table_detection(response_text)
+
+# For custom LLM responses:
+async def handle_custom_llm_response(response_text: str):
+    await handle_llm_response_with_table_detection(response_text)
+
+# For streaming responses (call this after stream is complete):
+async def handle_streaming_response_complete(full_response: str):
+    await detect_and_handle_table_response(full_response, None)
