@@ -1,0 +1,740 @@
+/* Light Blue Professional Markdown Theme */
+
+/* CSS Variables for easy customization */
+:root {
+  --primary-blue: #2980b9;
+  --secondary-blue: #3498db;
+  --light-blue: #5dade2;
+  --very-light-blue: #ebf8ff;
+  --background-blue: #f0f8ff;
+  --border-blue: #e3f2fd;
+  --text-primary: #2c3e50;
+  --text-secondary: #34495e;
+  --text-muted: #5a6c7d;
+  --white: #ffffff;
+  --shadow-blue: rgba(52, 152, 219, 0.1);
+  --shadow-blue-hover: rgba(52, 152, 219, 0.2);
+  --gradient-primary: linear-gradient(135deg, #3498db, #2980b9);
+  --gradient-light: linear-gradient(135deg, #f0f8ff 0%, #e6f3ff 100%);
+}
+
+/* Base styles */
+.markdown-content {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.7;
+  color: var(--text-primary);
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 1rem;
+  background: var(--gradient-light);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px var(--shadow-blue);
+  border: 1px solid rgba(173, 216, 230, 0.3);
+  backdrop-filter: blur(10px);
+}
+
+/* Headings */
+.markdown-content h1 {
+  color: var(--primary-blue);
+  font-size: 2.5rem;
+  font-weight: 700;
+  margin: 2rem 0 1.5rem 0;
+  padding-bottom: 0.75rem;
+  border-bottom: 3px solid var(--border-blue);
+  text-shadow: 0 2px 4px rgba(41, 128, 185, 0.1);
+  position: relative;
+}
+
+.markdown-content h1::before {
+  content: '';
+  position: absolute;
+  bottom: -3px;
+  left: 0;
+  width: 60px;
+  height: 3px;
+  background: var(--gradient-primary);
+  border-radius: 2px;
+}
+
+.markdown-content h2 {
+  color: var(--secondary-blue);
+  font-size: 2rem;
+  font-weight: 600;
+  margin: 2rem 0 1.2rem 0;
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid var(--very-light-blue);
+  position: relative;
+}
+
+.markdown-content h2::before {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  width: 40px;
+  height: 2px;
+  background: var(--secondary-blue);
+  border-radius: 1px;
+}
+
+.markdown-content h3 {
+  color: var(--light-blue);
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 1.5rem 0 1rem 0;
+  position: relative;
+  padding-left: 1rem;
+}
+
+.markdown-content h3::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 20px;
+  background: var(--gradient-primary);
+  border-radius: 2px;
+}
+
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  color: #7fb3d3;
+  font-weight: 600;
+  margin: 1.2rem 0 0.8rem 0;
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--light-blue);
+}
+
+/* Paragraphs and text */
+.markdown-content p {
+  margin: 1.2rem 0;
+  color: var(--text-secondary);
+  text-align: justify;
+}
+
+.markdown-content strong {
+  color: var(--primary-blue);
+  font-weight: 600;
+}
+
+.markdown-content em {
+  color: var(--light-blue);
+  font-style: italic;
+}
+
+/* Links */
+.markdown-content a {
+  color: var(--secondary-blue);
+  text-decoration: none;
+  font-weight: 500;
+  border-bottom: 1px solid transparent;
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+.markdown-content a:hover {
+  color: var(--primary-blue);
+  border-bottom-color: var(--primary-blue);
+  transform: translateY(-1px);
+}
+
+.markdown-content a::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  width: 0;
+  height: 2px;
+  background: var(--gradient-primary);
+  transition: width 0.3s ease;
+}
+
+.markdown-content a:hover::after {
+  width: 100%;
+}
+
+/* Lists */
+.markdown-content ul,
+.markdown-content ol {
+  margin: 1.5rem 0;
+  padding-left: 2rem;
+}
+
+.markdown-content li {
+  margin: 0.7rem 0;
+  color: var(--text-secondary);
+  position: relative;
+}
+
+.markdown-content ul li::marker {
+  color: var(--secondary-blue);
+  font-size: 1.2em;
+}
+
+.markdown-content ol li::marker {
+  color: var(--primary-blue);
+  font-weight: 600;
+}
+
+.markdown-content li:hover {
+  color: var(--text-primary);
+  transition: color 0.2s ease;
+}
+
+/* Tables */
+.markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 2rem 0;
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 8px 25px var(--shadow-blue);
+  border: 1px solid var(--border-blue);
+  backdrop-filter: blur(10px);
+}
+
+.markdown-content th {
+  background: var(--gradient-primary);
+  color: var(--white);
+  padding: 1.2rem 1rem;
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.95rem;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  position: relative;
+}
+
+.markdown-content th:first-child {
+  border-top-left-radius: 16px;
+}
+
+.markdown-content th:last-child {
+  border-top-right-radius: 16px;
+}
+
+.markdown-content td {
+  padding: 1rem;
+  border-bottom: 1px solid var(--border-blue);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  transition: all 0.2s ease;
+}
+
+.markdown-content tr:nth-child(even) td {
+  background: rgba(227, 242, 253, 0.4);
+}
+
+.markdown-content tr:hover td {
+  background: var(--shadow-blue-hover);
+  transform: scale(1.01);
+  box-shadow: 0 2px 8px var(--shadow-blue);
+}
+
+.markdown-content tr:last-child td:first-child {
+  border-bottom-left-radius: 16px;
+}
+
+.markdown-content tr:last-child td:last-child {
+  border-bottom-right-radius: 16px;
+}
+
+.markdown-content tr:last-child td {
+  border-bottom: none;
+}
+
+/* Code blocks */
+.markdown-content code {
+  background: rgba(52, 152, 219, 0.15);
+  color: var(--primary-blue);
+  padding: 0.3rem 0.6rem;
+  border-radius: 8px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 0.9em;
+  font-weight: 500;
+  border: 1px solid rgba(52, 152, 219, 0.2);
+}
+
+.markdown-content pre {
+  background: #f8fbff;
+  border: 2px solid var(--border-blue);
+  border-radius: 16px;
+  padding: 2rem;
+  overflow-x: auto;
+  margin: 2rem 0;
+  box-shadow: inset 0 4px 12px rgba(52, 152, 219, 0.08);
+  position: relative;
+}
+
+.markdown-content pre::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: var(--gradient-primary);
+  border-radius: 16px 16px 0 0;
+}
+
+.markdown-content pre code {
+  background: none;
+  color: var(--text-primary);
+  padding: 0;
+  border: none;
+  font-size: 0.9rem;
+}
+
+/* Blockquotes */
+.markdown-content blockquote {
+  border-left: 5px solid var(--secondary-blue);
+  background: linear-gradient(135deg, rgba(52, 152, 219, 0.08), rgba(52, 152, 219, 0.03));
+  margin: 2rem 0;
+  padding: 1.5rem 2rem;
+  border-radius: 0 16px 16px 0;
+  color: var(--text-secondary);
+  font-style: italic;
+  position: relative;
+  box-shadow: 0 4px 15px rgba(52, 152, 219, 0.1);
+}
+
+.markdown-content blockquote::before {
+  content: '"';
+  position: absolute;
+  top: -10px;
+  left: 15px;
+  font-size: 4rem;
+  color: var(--secondary-blue);
+  opacity: 0.3;
+  font-family: Georgia, serif;
+}
+
+.markdown-content blockquote p {
+  margin: 0.5rem 0;
+  color: var(--text-secondary);
+}
+
+.markdown-content blockquote p:first-child {
+  margin-top: 0;
+}
+
+.markdown-content blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+/* Horizontal rules */
+.markdown-content hr {
+  border: none;
+  height: 3px;
+  background: var(--gradient-primary);
+  border-radius: 2px;
+  margin: 3rem 0;
+  box-shadow: 0 2px 8px var(--shadow-blue);
+}
+
+/* Images */
+.markdown-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 12px;
+  box-shadow: 0 8px 25px var(--shadow-blue);
+  margin: 1.5rem 0;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.markdown-content img:hover {
+  transform: scale(1.02);
+  box-shadow: 0 12px 35px var(--shadow-blue-hover);
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .markdown-content {
+    padding: 1rem;
+    border-radius: 12px;
+  }
+  
+  .markdown-content h1 {
+    font-size: 2rem;
+  }
+  
+  .markdown-content h2 {
+    font-size: 1.6rem;
+  }
+  
+  .markdown-content h3 {
+    font-size: 1.3rem;
+  }
+  
+  .markdown-content table {
+    font-size: 0.85rem;
+    border-radius: 12px;
+  }
+  
+  .markdown-content th,
+  .markdown-content td {
+    padding: 0.8rem 0.6rem;
+  }
+  
+  .markdown-content pre {
+    padding: 1.5rem;
+    border-radius: 12px;
+  }
+  
+  .markdown-content blockquote {
+    padding: 1rem 1.5rem;
+    border-radius: 0 12px 12px 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .markdown-content {
+    padding: 0.8rem;
+  }
+  
+  .markdown-content h1 {
+    font-size: 1.8rem;
+  }
+  
+  .markdown-content h2 {
+    font-size: 1.4rem;
+  }
+  
+  .markdown-content h3 {
+    font-size: 1.2rem;
+  }
+  
+  .markdown-content table {
+    font-size: 0.8rem;
+  }
+  
+  .markdown-content th,
+  .markdown-content td {
+    padding: 0.6rem 0.4rem;
+  }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --primary-blue: #5dade2;
+    --secondary-blue: #85c1e9;
+    --light-blue: #aed6f1;
+    --very-light-blue: rgba(52, 152, 219, 0.1);
+    --background-blue: #1a1a2e;
+    --border-blue: rgba(52, 152, 219, 0.2);
+    --text-primary: #ecf0f1;
+    --text-secondary: #bdc3c7;
+    --text-muted: #95a5a6;
+    --white: #2c3e50;
+    --shadow-blue: rgba(52, 152, 219, 0.2);
+    --shadow-blue-hover: rgba(52, 152, 219, 0.3);
+    --gradient-primary: linear-gradient(135deg, #5dade2, #3498db);
+    --gradient-light: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  }
+  
+  .markdown-content pre {
+    background: #0f1419;
+    border-color: rgba(52, 152, 219, 0.3);
+  }
+  
+  .markdown-content code {
+    background: rgba(52, 152, 219, 0.2);
+  }
+}
+
+
+/**
+ * Options for customizing markdown generation
+ */
+interface MarkdownOptions {
+  title?: string;
+  maxTableDepth?: number;
+  useNumberedLists?: boolean;
+  escapeHtml?: boolean;
+  minItemsForTable?: number;
+}
+
+/**
+ * Type guard to check if a value is a plain object
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && 
+         value !== null && 
+         !Array.isArray(value) && 
+         value.constructor === Object;
+}
+
+/**
+ * Escapes special markdown characters in text
+ */
+function escapeMarkdown(text: string): string {
+  return text
+    .replace(/\\/g, '\\\\')
+    .replace(/\*/g, '\\*')
+    .replace(/_/g, '\\_')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]')
+    .replace(/\(/g, '\\(')
+    .replace(/\)/g, '\\)')
+    .replace(/~/g, '\\~')
+    .replace(/`/g, '\\`')
+    .replace(/>/g, '\\>')
+    .replace(/#/g, '\\#')
+    .replace(/\+/g, '\\+')
+    .replace(/-/g, '\\-')
+    .replace(/\./g, '\\.')
+    .replace(/!/g, '\\!')
+    .replace(/\|/g, '\\|');
+}
+
+/**
+ * Formats a value for display in markdown
+ */
+function formatValue(value: unknown, escapeHtml: boolean = false): string {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  
+  if (typeof value === 'string') {
+    return escapeHtml ? escapeMarkdown(value) : value.replace(/\|/g, '\\|');
+  }
+  
+  if (typeof value === 'object') {
+    return JSON.stringify(value, null, 2);
+  }
+  
+  return String(value);
+}
+
+/**
+ * Generates a markdown table from an array of objects
+ */
+function generateTable(
+  data: Record<string, unknown>[], 
+  title?: string, 
+  level: number = 2,
+  options: MarkdownOptions = {}
+): string {
+  if (data.length === 0) {
+    return title ? `${'#'.repeat(level)} ${title}\n\n*No data available*\n\n` : '';
+  }
+
+  let result = '';
+  
+  // Add title if provided
+  if (title) {
+    result += `${'#'.repeat(Math.min(level, 6))} ${title}\n\n`;
+  }
+
+  // Extract all unique keys from all objects
+  const allKeys = Array.from(
+    new Set(data.flatMap(item => Object.keys(item)))
+  ).sort();
+
+  if (allKeys.length === 0) {
+    return result + '*No columns found*\n\n';
+  }
+
+  // Generate table header
+  result += '| ' + allKeys.join(' | ') + ' |\n';
+  result += '| ' + allKeys.map(() => '---').join(' | ') + ' |\n';
+
+  // Generate table rows
+  data.forEach(item => {
+    const row = allKeys.map(key => formatValue(item[key], options.escapeHtml));
+    result += '| ' + row.join(' | ') + ' |\n';
+  });
+
+  result += '\n';
+  return result;
+}
+
+/**
+ * Processes a value and converts it to markdown format
+ */
+function processValue(
+  value: unknown, 
+  key: string = '', 
+  level: number = 1, 
+  options: MarkdownOptions = {}
+): string {
+  const { 
+    maxTableDepth = 3, 
+    useNumberedLists = false, 
+    minItemsForTable = 2 
+  } = options;
+  
+  let result = '';
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return key ? `**${key}**: *(empty array)*\n\n` : '';
+    }
+
+    // Check if array contains objects suitable for table generation
+    const isTableWorthy = value.length >= minItemsForTable &&
+                         level <= maxTableDepth &&
+                         value.every(item => isPlainObject(item)) &&
+                         value.length > 0;
+
+    if (isTableWorthy) {
+      const allKeys = Array.from(
+        new Set(value.flatMap(obj => Object.keys(obj as Record<string, unknown>)))
+      );
+      
+      if (allKeys.length > 0) {
+        return generateTable(
+          value as Record<string, unknown>[], 
+          key, 
+          level + 1, 
+          options
+        );
+      }
+    }
+
+    // Regular list format
+    if (key) {
+      result += `${'#'.repeat(Math.min(level + 1, 6))} ${key}\n\n`;
+    }
+
+    value.forEach((item, index) => {
+      if (isPlainObject(item)) {
+        result += `### ${key ? `${key} ` : ''}Item ${index + 1}\n\n`;
+        result += processValue(item, '', level + 2, options);
+      } else {
+        const listMarker = useNumberedLists ? `${index + 1}. ` : '- ';
+        result += `${listMarker}${formatValue(item, options.escapeHtml)}\n`;
+      }
+    });
+    result += '\n';
+
+  } else if (isPlainObject(value)) {
+    if (key) {
+      result += `${'#'.repeat(Math.min(level + 1, 6))} ${key}\n\n`;
+    }
+
+    Object.entries(value).forEach(([k, v]) => {
+      result += processValue(v, k, level + 1, options);
+    });
+
+  } else {
+    // Primitive value
+    if (key) {
+      const formattedValue = formatValue(value, options.escapeHtml);
+      result += `**${key}**: ${formattedValue}\n\n`;
+    } else {
+      result += `${formatValue(value, options.escapeHtml)}\n\n`;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Main function to generate markdown from JSON data
+ * 
+ * @param data - The JSON data to convert
+ * @param options - Configuration options for markdown generation
+ * @returns Generated markdown string
+ * 
+ * @example
+ * ```typescript
+ * const data = {
+ *   users: [
+ *     { name: "Alice", age: 30, role: "Developer" },
+ *     { name: "Bob", age: 25, role: "Designer" }
+ *   ],
+ *   company: "Tech Corp"
+ * };
+ * 
+ * const markdown = generateMarkdownFromJson(data, {
+ *   title: "Company Data",
+ *   minItemsForTable: 2
+ * });
+ * ```
+ */
+export function generateMarkdownFromJson(
+  data: unknown, 
+  options: MarkdownOptions = {}
+): string {
+  let markdown = '';
+  
+  // Add title if provided
+  if (options.title) {
+    markdown += `# ${options.title}\n\n`;
+  }
+  
+  try {
+    if (isPlainObject(data)) {
+      Object.entries(data).forEach(([key, value]) => {
+        markdown += processValue(value, key, 1, options);
+      });
+    } else if (Array.isArray(data)) {
+      // Handle top-level arrays
+      if (data.length > 0 && data.every(item => isPlainObject(item))) {
+        markdown += generateTable(
+          data as Record<string, unknown>[], 
+          options.title || 'Data', 
+          1, 
+          options
+        );
+      } else {
+        markdown += processValue(data, '', 1, options);
+      }
+    } else {
+      // Handle primitive top-level values
+      markdown += processValue(data, '', 1, options);
+    }
+  } catch (error) {
+    throw new Error(`Failed to generate markdown: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+  
+  return markdown.trim();
+}
+
+/**
+ * Utility function to validate JSON before conversion
+ */
+export function validateJson(jsonString: string): { isValid: boolean; error?: string; data?: unknown } {
+  try {
+    const data = JSON.parse(jsonString);
+    return { isValid: true, data };
+  } catch (error) {
+    return { 
+      isValid: false, 
+      error: error instanceof Error ? error.message : 'Invalid JSON format'
+    };
+  }
+}
+
+/**
+ * Convenience function to convert JSON string directly to markdown
+ */
+export function jsonStringToMarkdown(
+  jsonString: string, 
+  options: MarkdownOptions = {}
+): { success: boolean; markdown?: string; error?: string } {
+  const validation = validateJson(jsonString);
+  
+  if (!validation.isValid) {
+    return { success: false, error: validation.error };
+  }
+  
+  try {
+    const markdown = generateMarkdownFromJson(validation.data, options);
+    return { success: true, markdown };
+  } catch (error) {
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Failed to generate markdown'
+    };
+  }
+}
+
+// Export types for external use
+export type { MarkdownOptions };
