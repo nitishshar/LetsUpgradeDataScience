@@ -1,0 +1,669 @@
+// panel-layout.component.ts
+import { Component, Input, Output, EventEmitter, OnInit } from '@angular/core';
+
+export interface PanelConfig {
+  enabled: boolean;
+  collapsed: boolean;
+  width: string;
+  collapsible: boolean;
+  title?: string;
+  showToggleButton?: boolean;
+}
+
+@Component({
+  selector: 'app-panel-layout',
+  templateUrl: './panel-layout.component.html',
+  styleUrls: ['./panel-layout.component.css']
+})
+export class PanelLayoutComponent implements OnInit {
+  @Input() leftPanelConfig: PanelConfig = {
+    enabled: false,
+    collapsed: true,
+    width: '300px',
+    collapsible: true,
+    showToggleButton: true
+  };
+
+  @Input() rightPanelConfig: PanelConfig = {
+    enabled: false,
+    collapsed: true,
+    width: '300px',
+    collapsible: true,
+    showToggleButton: true
+  };
+
+  @Input() mainContentMinWidth: string = '300px';
+  @Input() animationDuration: string = '300ms';
+  @Input() panelBackgroundColor: string = '#f8f9fa';
+  @Input() borderColor: string = '#dee2e6';
+
+  @Output() leftPanelToggled = new EventEmitter<boolean>();
+  @Output() rightPanelToggled = new EventEmitter<boolean>();
+
+  ngOnInit() {
+    // Ensure default values are set
+    this.leftPanelConfig = { ...this.getDefaultConfig(), ...this.leftPanelConfig };
+    this.rightPanelConfig = { ...this.getDefaultConfig(), ...this.rightPanelConfig };
+  }
+
+  private getDefaultConfig(): PanelConfig {
+    return {
+      enabled: false,
+      collapsed: true,
+      width: '300px',
+      collapsible: true,
+      showToggleButton: true
+    };
+  }
+
+  toggleLeftPanel() {
+    if (this.leftPanelConfig.collapsible && this.leftPanelConfig.enabled) {
+      this.leftPanelConfig.collapsed = !this.leftPanelConfig.collapsed;
+      this.leftPanelToggled.emit(!this.leftPanelConfig.collapsed);
+    }
+  }
+
+  toggleRightPanel() {
+    if (this.rightPanelConfig.collapsible && this.rightPanelConfig.enabled) {
+      this.rightPanelConfig.collapsed = !this.rightPanelConfig.collapsed;
+      this.rightPanelToggled.emit(!this.rightPanelConfig.collapsed);
+    }
+  }
+
+  getMainContentStyle() {
+    let leftOffset = '0';
+    let rightOffset = '0';
+
+    if (this.leftPanelConfig.enabled && !this.leftPanelConfig.collapsed) {
+      leftOffset = this.leftPanelConfig.width;
+    }
+
+    if (this.rightPanelConfig.enabled && !this.rightPanelConfig.collapsed) {
+      rightOffset = this.rightPanelConfig.width;
+    }
+
+    return {
+      'margin-left': leftOffset,
+      'margin-right': rightOffset,
+      'min-width': this.mainContentMinWidth,
+      'transition': `margin ${this.animationDuration} ease-in-out`
+    };
+  }
+
+  getLeftPanelStyle() {
+    return {
+      'width': this.leftPanelConfig.collapsed ? '0' : this.leftPanelConfig.width,
+      'transition': `width ${this.animationDuration} ease-in-out`,
+      'background-color': this.panelBackgroundColor,
+      'border-right': `1px solid ${this.borderColor}`
+    };
+  }
+
+  getRightPanelStyle() {
+    return {
+      'width': this.rightPanelConfig.collapsed ? '0' : this.rightPanelConfig.width,
+      'transition': `width ${this.animationDuration} ease-in-out`,
+      'background-color': this.panelBackgroundColor,
+      'border-left': `1px solid ${this.borderColor}`
+    };
+  }
+}
+
+// panel-layout.component.html
+<!--
+<div class="panel-layout-container">
+  <!-- Left Panel -->
+  <div 
+    class="left-panel" 
+    *ngIf="leftPanelConfig.enabled"
+    [ngStyle]="getLeftPanelStyle()">
+    
+    <div class="panel-header" *ngIf="leftPanelConfig.title || leftPanelConfig.showToggleButton">
+      <h3 class="panel-title" *ngIf="leftPanelConfig.title">{{ leftPanelConfig.title }}</h3>
+      <button 
+        class="toggle-button left-toggle"
+        *ngIf="leftPanelConfig.showToggleButton && leftPanelConfig.collapsible"
+        (click)="toggleLeftPanel()"
+        [attr.aria-label]="leftPanelConfig.collapsed ? 'Expand left panel' : 'Collapse left panel'">
+        <span class="toggle-icon" [class.collapsed]="leftPanelConfig.collapsed">‹</span>
+      </button>
+    </div>
+
+    <div class="panel-content" [class.hidden]="leftPanelConfig.collapsed">
+      <ng-content select="[slot=left-panel]"></ng-content>
+    </div>
+  </div>
+
+  <!-- Toggle button for collapsed left panel -->
+  <button 
+    class="external-toggle-button left-external"
+    *ngIf="leftPanelConfig.enabled && leftPanelConfig.collapsed && leftPanelConfig.showToggleButton && leftPanelConfig.collapsible"
+    (click)="toggleLeftPanel()"
+    [attr.aria-label]="'Expand left panel'">
+    <span class="toggle-icon">›</span>
+  </button>
+
+  <!-- Main Content Area -->
+  <div class="main-content" [ngStyle]="getMainContentStyle()">
+    <ng-content select="[slot=main-content]"></ng-content>
+  </div>
+
+  <!-- Toggle button for collapsed right panel -->
+  <button 
+    class="external-toggle-button right-external"
+    *ngIf="rightPanelConfig.enabled && rightPanelConfig.collapsed && rightPanelConfig.showToggleButton && rightPanelConfig.collapsible"
+    (click)="toggleRightPanel()"
+    [attr.aria-label]="'Expand right panel'">
+    <span class="toggle-icon">‹</span>
+  </button>
+
+  <!-- Right Panel -->
+  <div 
+    class="right-panel" 
+    *ngIf="rightPanelConfig.enabled"
+    [ngStyle]="getRightPanelStyle()">
+    
+    <div class="panel-header" *ngIf="rightPanelConfig.title || rightPanelConfig.showToggleButton">
+      <button 
+        class="toggle-button right-toggle"
+        *ngIf="rightPanelConfig.showToggleButton && rightPanelConfig.collapsible"
+        (click)="toggleRightPanel()"
+        [attr.aria-label]="rightPanelConfig.collapsed ? 'Expand right panel' : 'Collapse right panel'">
+        <span class="toggle-icon" [class.collapsed]="rightPanelConfig.collapsed">›</span>
+      </button>
+      <h3 class="panel-title" *ngIf="rightPanelConfig.title">{{ rightPanelConfig.title }}</h3>
+    </div>
+
+    <div class="panel-content" [class.hidden]="rightPanelConfig.collapsed">
+      <ng-content select="[slot=right-panel]"></ng-content>
+    </div>
+  </div>
+</div>
+-->
+
+// panel-layout.component.css
+/*
+.panel-layout-container {
+  display: flex;
+  height: 100vh;
+  position: relative;
+  overflow: hidden;
+}
+
+.left-panel {
+  position: fixed;
+  left: 0;
+  top: 0;
+  height: 100vh;
+  z-index: 1000;
+  overflow: hidden;
+  box-shadow: 2px 0 4px rgba(0, 0, 0, 0.1);
+}
+
+.right-panel {
+  position: fixed;
+  right: 0;
+  top: 0;
+  height: 100vh;
+  z-index: 1000;
+  overflow: hidden;
+  box-shadow: -2px 0 4px rgba(0, 0, 0, 0.1);
+}
+
+.main-content {
+  flex: 1;
+  height: 100vh;
+  overflow: auto;
+  padding: 20px;
+  background-color: #ffffff;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 15px 20px;
+  border-bottom: 1px solid #dee2e6;
+  background-color: #f8f9fa;
+  min-height: 60px;
+}
+
+.panel-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #333;
+}
+
+.panel-content {
+  height: calc(100vh - 60px);
+  overflow: auto;
+  padding: 20px;
+}
+
+.panel-content.hidden {
+  display: none;
+}
+
+.toggle-button {
+  background: #007bff;
+  color: white;
+  border: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: bold;
+  transition: all 0.3s ease;
+}
+
+.toggle-button:hover {
+  background: #0056b3;
+  transform: scale(1.1);
+}
+
+.toggle-button:focus {
+  outline: 2px solid #80bdff;
+  outline-offset: 2px;
+}
+
+.toggle-icon {
+  transition: transform 0.3s ease;
+  line-height: 1;
+}
+
+.left-toggle .toggle-icon.collapsed {
+  transform: rotate(180deg);
+}
+
+.right-toggle .toggle-icon.collapsed {
+  transform: rotate(180deg);
+}
+
+.external-toggle-button {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  background: #007bff;
+  color: white;
+  border: none;
+  width: 40px;
+  height: 60px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: bold;
+  z-index: 1001;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.external-toggle-button:hover {
+  background: #0056b3;
+  transform: translateY(-50%) scale(1.05);
+}
+
+.external-toggle-button:focus {
+  outline: 2px solid #80bdff;
+  outline-offset: 2px;
+}
+
+.left-external {
+  left: 0;
+  border-radius: 0 8px 8px 0;
+}
+
+.right-external {
+  right: 0;
+  border-radius: 8px 0 0 8px;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .left-panel,
+  .right-panel {
+    width: 100% !important;
+    max-width: 300px;
+  }
+  
+  .main-content {
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+  }
+  
+  .panel-content {
+    padding: 15px;
+  }
+}
+
+/* Custom scrollbar for panels */
+.panel-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.panel-content::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 3px;
+}
+
+.panel-content::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 3px;
+}
+
+.panel-content::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+*/
+
+// Example usage component
+// app.component.ts
+import { Component } from '@angular/core';
+import { PanelConfig } from './panel-layout.component';
+
+@Component({
+  selector: 'app-root',
+  template: `
+    <app-panel-layout 
+      [leftPanelConfig]="leftConfig"
+      [rightPanelConfig]="rightConfig"
+      (leftPanelToggled)="onLeftPanelToggled($event)"
+      (rightPanelToggled)="onRightPanelToggled($event)">
+      
+      <!-- Left Panel Content -->
+      <div slot="left-panel">
+        <h4>Navigation</h4>
+        <ul class="nav-list">
+          <li><a href="#dashboard">Dashboard</a></li>
+          <li><a href="#users">Users</a></li>
+          <li><a href="#settings">Settings</a></li>
+          <li><a href="#reports">Reports</a></li>
+        </ul>
+        
+        <div class="panel-section">
+          <h5>Quick Actions</h5>
+          <button class="action-btn">New User</button>
+          <button class="action-btn">Generate Report</button>
+        </div>
+      </div>
+
+      <!-- Main Content -->
+      <div slot="main-content">
+        <h1>Main Content Area</h1>
+        <p>This is the main content area. It will adjust its margins based on which panels are open.</p>
+        
+        <div class="content-section">
+          <h2>Dashboard</h2>
+          <div class="card-grid">
+            <div class="card">
+              <h3>Total Users</h3>
+              <p class="metric">1,234</p>
+            </div>
+            <div class="card">
+              <h3>Active Sessions</h3>
+              <p class="metric">456</p>
+            </div>
+            <div class="card">
+              <h3>Revenue</h3>
+              <p class="metric">$12,345</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button (click)="toggleLeftPanel()">Toggle Left Panel</button>
+          <button (click)="toggleRightPanel()">Toggle Right Panel</button>
+          <button (click)="toggleBothPanels()">Toggle Both Panels</button>
+        </div>
+      </div>
+
+      <!-- Right Panel Content -->
+      <div slot="right-panel">
+        <h4>Properties</h4>
+        <div class="property-group">
+          <label>Theme</label>
+          <select>
+            <option>Light</option>
+            <option>Dark</option>
+          </select>
+        </div>
+        
+        <div class="property-group">
+          <label>Language</label>
+          <select>
+            <option>English</option>
+            <option>Spanish</option>
+            <option>French</option>
+          </select>
+        </div>
+
+        <div class="panel-section">
+          <h5>Recent Activity</h5>
+          <div class="activity-item">
+            <span class="activity-time">2 min ago</span>
+            <span class="activity-text">User logged in</span>
+          </div>
+          <div class="activity-item">
+            <span class="activity-time">5 min ago</span>
+            <span class="activity-text">Report generated</span>
+          </div>
+          <div class="activity-item">
+            <span class="activity-time">10 min ago</span>
+            <span class="activity-text">Settings updated</span>
+          </div>
+        </div>
+      </div>
+    </app-panel-layout>
+  `,
+  styles: [`
+    .nav-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .nav-list li {
+      margin-bottom: 8px;
+    }
+
+    .nav-list a {
+      display: block;
+      padding: 8px 12px;
+      color: #333;
+      text-decoration: none;
+      border-radius: 4px;
+      transition: background-color 0.2s;
+    }
+
+    .nav-list a:hover {
+      background-color: #e9ecef;
+    }
+
+    .panel-section {
+      margin-top: 30px;
+      padding-top: 20px;
+      border-top: 1px solid #dee2e6;
+    }
+
+    .panel-section h5 {
+      margin: 0 0 15px 0;
+      font-size: 14px;
+      font-weight: 600;
+      color: #666;
+    }
+
+    .action-btn {
+      display: block;
+      width: 100%;
+      padding: 8px 12px;
+      margin-bottom: 8px;
+      background: #28a745;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .action-btn:hover {
+      background: #218838;
+    }
+
+    .content-section {
+      margin: 30px 0;
+    }
+
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 20px;
+      margin-top: 20px;
+    }
+
+    .card {
+      background: #f8f9fa;
+      padding: 20px;
+      border-radius: 8px;
+      border: 1px solid #dee2e6;
+      text-align: center;
+    }
+
+    .card h3 {
+      margin: 0 0 10px 0;
+      font-size: 14px;
+      color: #666;
+    }
+
+    .metric {
+      font-size: 24px;
+      font-weight: bold;
+      color: #333;
+      margin: 0;
+    }
+
+    .property-group {
+      margin-bottom: 20px;
+    }
+
+    .property-group label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: 600;
+      color: #333;
+    }
+
+    .property-group select {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+
+    .activity-item {
+      display: flex;
+      flex-direction: column;
+      padding: 8px 0;
+      border-bottom: 1px solid #eee;
+    }
+
+    .activity-time {
+      font-size: 12px;
+      color: #666;
+    }
+
+    .activity-text {
+      font-size: 14px;
+      color: #333;
+      margin-top: 2px;
+    }
+
+    .controls {
+      margin-top: 30px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .controls button {
+      padding: 8px 16px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .controls button:hover {
+      background: #0056b3;
+    }
+  `]
+})
+export class AppComponent {
+  leftConfig: PanelConfig = {
+    enabled: true,
+    collapsed: false,
+    width: '280px',
+    collapsible: true,
+    title: 'Navigation',
+    showToggleButton: true
+  };
+
+  rightConfig: PanelConfig = {
+    enabled: true,
+    collapsed: true,
+    width: '320px',
+    collapsible: true,
+    title: 'Properties',
+    showToggleButton: true
+  };
+
+  onLeftPanelToggled(isOpen: boolean) {
+    console.log('Left panel toggled:', isOpen);
+  }
+
+  onRightPanelToggled(isOpen: boolean) {
+    console.log('Right panel toggled:', isOpen);
+  }
+
+  toggleLeftPanel() {
+    this.leftConfig.collapsed = !this.leftConfig.collapsed;
+  }
+
+  toggleRightPanel() {
+    this.rightConfig.collapsed = !this.rightConfig.collapsed;
+  }
+
+  toggleBothPanels() {
+    this.leftConfig.collapsed = !this.leftConfig.collapsed;
+    this.rightConfig.collapsed = !this.rightConfig.collapsed;
+  }
+}
+
+// Don't forget to add the component to your module
+// app.module.ts
+import { NgModule } from '@angular/core';
+import { BrowserModule } from '@angular/platform-browser';
+import { CommonModule } from '@angular/common';
+
+import { AppComponent } from './app.component';
+import { PanelLayoutComponent } from './panel-layout.component';
+
+@NgModule({
+  declarations: [
+    AppComponent,
+    PanelLayoutComponent
+  ],
+  imports: [
+    BrowserModule,
+    CommonModule
+  ],
+  providers: [],
+  bootstrap: [AppComponent]
+})
+export class AppModule { }
