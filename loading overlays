@@ -1,0 +1,402 @@
+// loading-overlay.component.ts
+import { Component, Input } from '@angular/core';
+import { CommonModule } from '@angular/common';
+
+@Component({
+  selector: 'app-loading-overlay',
+  standalone: true,
+  imports: [CommonModule],
+  template: `
+    <div 
+      class="loading-overlay" 
+      [class.active]="isLoading"
+      *ngIf="isLoading">
+      <div class="loading-spinner">
+        <div class="spinner"></div>
+        <p class="loading-text" *ngIf="loadingText">{{ loadingText }}</p>
+      </div>
+    </div>
+  `,
+  styles: [`
+    .loading-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: rgba(255, 255, 255, 0.8);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.3s ease, visibility 0.3s ease;
+    }
+
+    .loading-overlay.active {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    .loading-spinner {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid #f3f3f3;
+      border-top: 4px solid #3498db;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .loading-text {
+      margin: 0;
+      color: #666;
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    /* Dark theme variant */
+    .loading-overlay.dark {
+      background-color: rgba(0, 0, 0, 0.7);
+    }
+
+    .loading-overlay.dark .spinner {
+      border-color: #444;
+      border-top-color: #fff;
+    }
+
+    .loading-overlay.dark .loading-text {
+      color: #fff;
+    }
+  `]
+})
+export class LoadingOverlayComponent {
+  @Input() isLoading: boolean = false;
+  @Input() loadingText: string = '';
+  @Input() darkTheme: boolean = false;
+}
+
+// Usage Example Component
+// example-usage.component.ts
+import { Component } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { LoadingOverlayComponent } from './loading-overlay.component';
+
+@Component({
+  selector: 'app-example-usage',
+  standalone: true,
+  imports: [CommonModule, LoadingOverlayComponent],
+  template: `
+    <div class="container">
+      <h2>Loading Overlay Examples</h2>
+      
+      <!-- Example 1: Basic usage -->
+      <div class="example-section" style="position: relative;">
+        <h3>Basic Loading Overlay</h3>
+        <div class="content-box">
+          <p>This is some content that will be overlaid with a loading spinner.</p>
+          <button (click)="toggleLoading1()" class="btn">
+            {{ isLoading1 ? 'Stop Loading' : 'Start Loading' }}
+          </button>
+        </div>
+        <app-loading-overlay [isLoading]="isLoading1"></app-loading-overlay>
+      </div>
+
+      <!-- Example 2: With loading text -->
+      <div class="example-section" style="position: relative;">
+        <h3>Loading Overlay with Text</h3>
+        <div class="content-box">
+          <p>This example shows a loading overlay with custom text.</p>
+          <button (click)="toggleLoading2()" class="btn">
+            {{ isLoading2 ? 'Stop Loading' : 'Start Loading' }}
+          </button>
+        </div>
+        <app-loading-overlay 
+          [isLoading]="isLoading2" 
+          loadingText="Please wait, processing your request...">
+        </app-loading-overlay>
+      </div>
+
+      <!-- Example 3: Dark theme -->
+      <div class="example-section dark-section" style="position: relative;">
+        <h3 style="color: white;">Dark Theme Loading Overlay</h3>
+        <div class="content-box dark">
+          <p style="color: white;">This example shows a dark theme loading overlay.</p>
+          <button (click)="toggleLoading3()" class="btn btn-dark">
+            {{ isLoading3 ? 'Stop Loading' : 'Start Loading' }}
+          </button>
+        </div>
+        <app-loading-overlay 
+          [isLoading]="isLoading3" 
+          loadingText="Loading data..."
+          [darkTheme]="true">
+        </app-loading-overlay>
+      </div>
+
+      <!-- Example 4: Card with loading -->
+      <div class="card" style="position: relative;">
+        <div class="card-header">
+          <h3>User Profile</h3>
+          <button (click)="loadUserData()" class="btn btn-sm">Refresh Data</button>
+        </div>
+        <div class="card-body">
+          <div *ngIf="!isLoadingUser; else userSkeleton">
+            <p><strong>Name:</strong> John Doe</p>
+            <p><strong>Email:</strong> john.doe@example.com</p>
+            <p><strong>Role:</strong> Administrator</p>
+          </div>
+          <ng-template #userSkeleton>
+            <p>Loading user information...</p>
+          </ng-template>
+        </div>
+        <app-loading-overlay 
+          [isLoading]="isLoadingUser" 
+          loadingText="Fetching user data...">
+        </app-loading-overlay>
+      </div>
+    </div>
+  `,
+  styles: [`
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    .example-section {
+      margin-bottom: 30px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .content-box {
+      padding: 20px;
+      min-height: 100px;
+      background: #f9f9f9;
+    }
+
+    .dark-section {
+      background: #333;
+      border-color: #555;
+    }
+
+    .content-box.dark {
+      background: #444;
+    }
+
+    .card {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      overflow: hidden;
+      margin-top: 20px;
+    }
+
+    .card-header {
+      background: #f8f9fa;
+      padding: 15px 20px;
+      border-bottom: 1px solid #ddd;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .card-header h3 {
+      margin: 0;
+    }
+
+    .card-body {
+      padding: 20px;
+      min-height: 120px;
+    }
+
+    .btn {
+      background: #007bff;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .btn:hover {
+      background: #0056b3;
+    }
+
+    .btn-dark {
+      background: #6c757d;
+    }
+
+    .btn-dark:hover {
+      background: #545b62;
+    }
+
+    .btn-sm {
+      padding: 4px 8px;
+      font-size: 12px;
+    }
+
+    h2, h3 {
+      color: #333;
+    }
+  `]
+})
+export class ExampleUsageComponent {
+  isLoading1 = false;
+  isLoading2 = false;
+  isLoading3 = false;
+  isLoadingUser = false;
+
+  toggleLoading1() {
+    this.isLoading1 = !this.isLoading1;
+  }
+
+  toggleLoading2() {
+    this.isLoading2 = !this.isLoading2;
+    if (this.isLoading2) {
+      // Simulate API call
+      setTimeout(() => {
+        this.isLoading2 = false;
+      }, 3000);
+    }
+  }
+
+  toggleLoading3() {
+    this.isLoading3 = !this.isLoading3;
+  }
+
+  loadUserData() {
+    this.isLoadingUser = true;
+    // Simulate API call
+    setTimeout(() => {
+      this.isLoadingUser = false;
+    }, 2000);
+  }
+}
+
+// Service example for managing loading states
+// loading.service.ts
+import { Injectable } from '@angular/core';
+import { BehaviorSubject } from 'rxjs';
+
+@Injectable({
+  providedIn: 'root'
+})
+export class LoadingService {
+  private loadingSubject = new BehaviorSubject<boolean>(false);
+  public loading$ = this.loadingSubject.asObservable();
+
+  show() {
+    this.loadingSubject.next(true);
+  }
+
+  hide() {
+    this.loadingSubject.next(false);
+  }
+
+  // Method to wrap async operations
+  async withLoading<T>(operation: () => Promise<T>): Promise<T> {
+    this.show();
+    try {
+      return await operation();
+    } finally {
+      this.hide();
+    }
+  }
+}
+
+// Alternative: Directive approach
+// loading-overlay.directive.ts
+import { Directive, Input, ElementRef, Renderer2, OnChanges } from '@angular/core';
+
+@Directive({
+  selector: '[appLoadingOverlay]',
+  standalone: true
+})
+export class LoadingOverlayDirective implements OnChanges {
+  @Input('appLoadingOverlay') isLoading: boolean = false;
+  @Input() loadingText: string = '';
+  
+  private overlayElement: HTMLElement | null = null;
+
+  constructor(
+    private el: ElementRef,
+    private renderer: Renderer2
+  ) {}
+
+  ngOnChanges() {
+    if (this.isLoading) {
+      this.showOverlay();
+    } else {
+      this.hideOverlay();
+    }
+  }
+
+  private showOverlay() {
+    if (this.overlayElement) return;
+
+    // Set position relative on host element
+    this.renderer.setStyle(this.el.nativeElement, 'position', 'relative');
+
+    // Create overlay
+    this.overlayElement = this.renderer.createElement('div');
+    this.renderer.addClass(this.overlayElement, 'loading-overlay-directive');
+    
+    // Add styles
+    this.renderer.setStyle(this.overlayElement, 'position', 'absolute');
+    this.renderer.setStyle(this.overlayElement, 'top', '0');
+    this.renderer.setStyle(this.overlayElement, 'left', '0');
+    this.renderer.setStyle(this.overlayElement, 'right', '0');
+    this.renderer.setStyle(this.overlayElement, 'bottom', '0');
+    this.renderer.setStyle(this.overlayElement, 'background-color', 'rgba(255, 255, 255, 0.8)');
+    this.renderer.setStyle(this.overlayElement, 'display', 'flex');
+    this.renderer.setStyle(this.overlayElement, 'justify-content', 'center');
+    this.renderer.setStyle(this.overlayElement, 'align-items', 'center');
+    this.renderer.setStyle(this.overlayElement, 'z-index', '1000');
+
+    // Create spinner
+    const spinner = this.renderer.createElement('div');
+    this.renderer.setStyle(spinner, 'width', '40px');
+    this.renderer.setStyle(spinner, 'height', '40px');
+    this.renderer.setStyle(spinner, 'border', '4px solid #f3f3f3');
+    this.renderer.setStyle(spinner, 'border-top', '4px solid #3498db');
+    this.renderer.setStyle(spinner, 'border-radius', '50%');
+    this.renderer.setStyle(spinner, 'animation', 'spin 1s linear infinite');
+
+    // Add spinner to overlay
+    this.renderer.appendChild(this.overlayElement, spinner);
+
+    // Add text if provided
+    if (this.loadingText) {
+      const textElement = this.renderer.createElement('p');
+      const textNode = this.renderer.createText(this.loadingText);
+      this.renderer.appendChild(textElement, textNode);
+      this.renderer.setStyle(textElement, 'margin-left', '10px');
+      this.renderer.setStyle(textElement, 'color', '#666');
+      this.renderer.appendChild(this.overlayElement, textElement);
+    }
+
+    // Append to host element
+    this.renderer.appendChild(this.el.nativeElement, this.overlayElement);
+  }
+
+  private hideOverlay() {
+    if (this.overlayElement) {
+      this.renderer.removeChild(this.el.nativeElement, this.overlayElement);
+      this.overlayElement = null;
+    }
+  }
+}
