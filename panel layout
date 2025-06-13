@@ -667,3 +667,9 @@ import { PanelLayoutComponent } from './panel-layout.component';
   bootstrap: [AppComponent]
 })
 export class AppModule { }
+
+<app-panel-layout>
+  <div slot="left-panel"><!-- Left panel content --></div>
+  <div slot="main-content"><!-- Main content --></div>
+  <div slot="right-panel"><!-- Right panel content --></div>
+</app-panel-layout>
