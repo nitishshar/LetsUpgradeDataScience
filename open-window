@@ -26,3 +26,6 @@ openComponentInNewWindow() {
     });
   }
 }
+  private componentFactoryResolver: ComponentFactoryResolver,
+    private appRef: ApplicationRef,
+    private injector: Injector  
