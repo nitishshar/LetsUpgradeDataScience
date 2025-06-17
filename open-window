@@ -29,3 +29,45 @@ openComponentInNewWindow() {
   private componentFactoryResolver: ComponentFactoryResolver,
     private appRef: ApplicationRef,
     private injector: Injector  
+openComponentInNewWindow() {
+  const newWindow = window.open('', '_blank', 'width=800,height=600');
+  
+  if (newWindow) {
+    // Copy all stylesheets from parent window
+    const parentDocument = document;
+    const newDocument = newWindow.document;
+    
+    // Copy all link tags (external stylesheets)
+    const linkTags = parentDocument.querySelectorAll('link[rel="stylesheet"]');
+    linkTags.forEach(link => {
+      const newLink = newDocument.createElement('link');
+      newLink.rel = 'stylesheet';
+      newLink.href = (link as HTMLLinkElement).href;
+      newDocument.head.appendChild(newLink);
+    });
+    
+    // Copy all style tags (inline styles)
+    const styleTags = parentDocument.querySelectorAll('style');
+    styleTags.forEach(style => {
+      const newStyle = newDocument.createElement('style');
+      newStyle.textContent = style.textContent;
+      newDocument.head.appendChild(newStyle);
+    });
+    
+    // Now create your component
+    const componentRef = createComponent(YourDialogComponent, {
+      environmentInjector: this.injector
+    });
+    
+    this.appRef.attachView(componentRef.hostView);
+    const domElem = (componentRef.hostView as any).rootNodes[0] as HTMLElement;
+    
+    newWindow.document.body.appendChild(domElem);
+    newWindow.document.title = 'Your Component Window';
+    
+    newWindow.addEventListener('beforeunload', () => {
+      this.appRef.detachView(componentRef.hostView);
+      componentRef.destroy();
+    });
+  }
+}
