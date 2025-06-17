@@ -1,0 +1,28 @@
+import { ComponentRef, ViewContainerRef, ApplicationRef, ComponentFactoryResolver, Injector } from '@angular/core';
+
+openComponentInNewWindow() {
+  // Open new window
+  const newWindow = window.open('', '_blank', 'width=800,height=600');
+  
+  if (newWindow) {
+    // Create component dynamically
+    const componentFactory = this.componentFactoryResolver.resolveComponentFactory(YourComponent);
+    const componentRef = componentFactory.create(this.injector);
+    
+    // Attach to application
+    this.appRef.attachView(componentRef.hostView);
+    
+    // Get DOM element
+    const domElem = (componentRef.hostView as any).rootNodes[0] as HTMLElement;
+    
+    // Add to new window
+    newWindow.document.body.appendChild(domElem);
+    newWindow.document.title = 'Your Component Window';
+    
+    // Handle window close
+    newWindow.addEventListener('beforeunload', () => {
+      this.appRef.detachView(componentRef.hostView);
+      componentRef.destroy();
+    });
+  }
+}
