@@ -1,0 +1,99 @@
+body {
+  font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: #eceff1;
+  color: #263238;
+  line-height: 1.6;
+  padding: 2rem;
+  max-width: 800px;
+  margin: auto;
+  font-size: 15px;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: #37474f;
+  font-weight: 600;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+}
+
+h1 { font-size: 2em; border-bottom: 2px solid #90a4ae; padding-bottom: 0.3em; }
+h2 { font-size: 1.6em; border-bottom: 1px solid #b0bec5; padding-bottom: 0.2em; }
+h3 { font-size: 1.3em; }
+h4, h5, h6 { font-size: 1.1em; }
+
+p {
+  margin: 0.5em 0;
+  color: #455a64;
+}
+
+a {
+  color: #1e88e5;
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+ul, ol {
+  padding-left: 1.5em;
+  margin: 0.5em 0;
+}
+
+li {
+  margin: 0.3em 0;
+}
+
+code {
+  background: #cfd8dc;
+  color: #263238;
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.9em;
+}
+
+pre {
+  background: #eceff1;
+  padding: 1em;
+  border-left: 4px solid #607d8b;
+  overflow-x: auto;
+  border-radius: 4px;
+  font-size: 0.9em;
+  font-family: 'Fira Code', monospace;
+  color: #212121;
+}
+
+blockquote {
+  border-left: 4px solid #90a4ae;
+  padding-left: 1em;
+  margin: 1em 0;
+  color: #546e7a;
+  font-style: italic;
+  background: #f5f5f5;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid #cfd8dc;
+  margin: 2em 0;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+}
+
+table, th, td {
+  border: 1px solid #b0bec5;
+}
+
+th {
+  background-color: #cfd8dc;
+  padding: 0.5em;
+  text-align: left;
+}
+
+td {
+  padding: 0.5em;
+}
