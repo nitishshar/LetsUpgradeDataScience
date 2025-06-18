@@ -97,3 +97,31 @@ th {
 td {
   padding: 0.5em;
 }
+
+
+
+
+
+
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto; /* Default is 'auto', but clarify it */
+  margin: 1em 0;
+  word-wrap: break-word;
+}
+
+th, td {
+  padding: 0.5em;
+  border: 1px solid #b0bec5;
+  vertical-align: top;
+  max-width: 250px; /* Prevent very wide cells */
+  overflow-wrap: break-word; /* Allow breaking long words */
+  word-break: break-word;
+  white-space: normal; /* Allow text to wrap in a manageable way */
+}
+
+td {
+  font-size: 0.95em;
+}
