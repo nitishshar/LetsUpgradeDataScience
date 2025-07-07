@@ -1,0 +1,124 @@
+<script>
+        function markdownToHtml(markdown) {
+            if (!markdown) return '';
+            
+            let html = markdown;
+            
+            // Headers
+            html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+            html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+            html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+            html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+            html = html.replace(/^##### (.+)$/gm, '<h5>$1</h5>');
+            html = html.replace(/^###### (.+)$/gm, '<h6>$1</h6>');
+            
+            // Process tables first (before other formatting)
+            html = html.replace(/\|(.+)\|\n\|(.+)\|\n((?:\|.+\|\n?)*)/g, function(match, header, separator, rows) {
+                // Parse header
+                const headerCells = header.split('|').map(cell => cell.trim()).filter(cell => cell);
+                const headerRow = '<tr>' + headerCells.map(cell => `<th>${cell}</th>`).join('') + '</tr>';
+                
+                // Parse alignment from separator (optional feature)
+                const alignments = separator.split('|').map(cell => {
+                    const trimmed = cell.trim();
+                    if (trimmed.startsWith(':') && trimmed.endsWith(':')) return 'center';
+                    if (trimmed.endsWith(':')) return 'right';
+                    return 'left';
+                }).filter(align => align);
+                
+                // Parse rows
+                const dataRows = rows.trim().split('\n').map(row => {
+                    if (!row.trim()) return '';
+                    const cells = row.split('|').map(cell => cell.trim()).filter(cell => cell);
+                    return '<tr>' + cells.map((cell, index) => {
+                        const align = alignments[index] || 'left';
+                        return `<td style="text-align: ${align}">${cell}</td>`;
+                    }).join('') + '</tr>';
+                }).filter(row => row).join('');
+                
+                return `<table>${headerRow}${dataRows}</table>`;
+            });
+            
+            // Code blocks
+            html = html.replace(/```(.+?)```/gs, '<pre><code>$1</code></pre>');
+            
+            // Inline code
+            html = html.replace(/`(.+?)`/g, '<code>$1</code>');
+            
+            // Bold and italic
+            html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+            
+            // Links
+            html = html.replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2">$1</a>');
+            
+            // Task lists (before regular lists)
+            html = html.replace(/^- \[x\] (.+)$/gm, '<li><input type="checkbox" checked disabled> $1</li>');
+            html = html.replace(/^- \[ \] (.+)$/gm, '<li><input type="checkbox" disabled> $1</li>');
+            
+            // Lists
+            html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+            html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+            
+            // Blockquotes
+            html = html.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
+            
+            // Horizontal rules
+            html = html.replace(/^---$/gm, '<hr>');
+            
+            // Wrap consecutive list items in ul/ol tags
+            html = html.replace(/(<li>.*?<\/li>)(\n<li>.*?<\/li>)*/g, function(match) {
+                return `<ul>${match}</ul>`;
+            });
+            
+            // Convert line breaks to paragraphs
+            html = html.replace(/\n\n/g, '</p><p>');
+            html = '<p>' + html + '</p>';
+            
+            // Clean up empty paragraphs and fix block elements
+            html = html.replace(/<p><\/p>/g, '');
+            html = html.replace(/<p>(<h[1-6]>)/g, '$1');
+            html = html.replace(/(<\/h[1-6]>)<\/p>/g, '$1');
+            html = html.replace(/<p>(<ul>)/g, '$1');
+            html = html.replace(/(<\/ul>)<\/p>/g, '$1');
+            html = html.replace(/<p>(<ol>)/g, '$1');
+            html = html.replace(/(<\/ol>)<\/p>/g, '$1');
+            html = html.replace(/<p>(<blockquote>)/g, '$1');
+            html = html.replace(/(<\/blockquote>)<\/p>/g, '$1');
+            html = html.replace(/<p>(<pre>)/g, '$1');
+            html = html.replace(/(<\/pre>)<\/p>/g, '$1');
+            html = html.replace(/<p>(<hr>)<\/p>/g, '$1');
+            html = html.replace(/<p>(<table>)/g, '$1');
+            html = html.replace(/(<\/table>)<\/p>/g, '$1');
+            
+            return html;
+        }
+        
+        function updateOutput() {
+            const input = document.getElementById('markdown-input');
+            const output = document.getElementById('html-output');
+            
+            if (!input || !output) {
+                console.error('Elements not found');
+                return;
+            }
+            
+            const markdown = input.value;
+            console.log('Input markdown:', markdown);
+            
+            if (!markdown) {
+                output.innerHTML = '<p>Type some markdown to see the HTML output...</p>';
+                return;
+            }
+            
+            const html = markdownToHtml(markdown);
+            console.log('Output HTML:', html);
+            output.innerHTML = html;
+        }
+        
+        // Initialize with demo content
+        document.getElementById('markdown-input').addEventListener('input', updateOutput);
+        
+        // Initial render
+        updateOutput();
+    </script>
