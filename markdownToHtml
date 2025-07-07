@@ -5,7 +5,12 @@ function escapeHtml(html) {
              .replace(/"/g, '&quot;')
              .replace(/'/g, '&#39;');
 }
-
+function splitTableRow(row) {
+  // Remove ONE leading/trailing pipe if present
+  if (row.startsWith('|')) row = row.slice(1);
+  if (row.endsWith('|')) row = row.slice(0, -1);
+  return row.split('|').map(cell => cell.trim());
+}
 function markdownToHtml(markdown) {
   if (!markdown) return '';
 
