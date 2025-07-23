@@ -1,0 +1,255 @@
+/**
+ * Export multiple datasets to Excel with separate sheets using ag-Grid
+ * @param {Array} sheetsData - Array of objects containing sheet information
+ * @param {string} fileName - Name of the Excel file (without extension)
+ * @param {Object} globalOptions - Global export options (optional)
+ * 
+ * sheetsData format:
+ * [
+ *   {
+ *     sheetName: 'Sheet1',
+ *     rowData: [...], // Array of data objects
+ *     columnDefs: [...], // ag-Grid column definitions
+ *     sheetOptions: {...} // Optional sheet-specific options
+ *   },
+ *   ...
+ * ]
+ */
+function exportMultiSheetExcel(sheetsData, fileName = 'export', globalOptions = {}) {
+  if (!sheetsData || !Array.isArray(sheetsData) || sheetsData.length === 0) {
+    console.error('sheetsData must be a non-empty array');
+    return;
+  }
+
+  // Default global options
+  const defaultGlobalOptions = {
+    author: 'ag-Grid Export',
+    fontSize: 11,
+    fontFamily: 'Calibri',
+    ...globalOptions
+  };
+
+  // Create sheets array for ag-Grid export
+  const sheets = sheetsData.map((sheetData, index) => {
+    const {
+      sheetName = `Sheet${index + 1}`,
+      rowData = [],
+      columnDefs = [],
+      sheetOptions = {}
+    } = sheetData;
+
+    // Validate required data
+    if (!rowData.length) {
+      console.warn(`No data provided for sheet: ${sheetName}`);
+      return null;
+    }
+
+    // Generate column definitions if not provided
+    let finalColumnDefs = columnDefs;
+    if (!columnDefs.length && rowData.length > 0) {
+      finalColumnDefs = generateColumnDefs(rowData[0]);
+    }
+
+    // Default sheet options
+    const defaultSheetOptions = {
+      sheetName: sheetName,
+      columnWidth: 100,
+      ...sheetOptions
+    };
+
+    return {
+      data: rowData,
+      columns: finalColumnDefs,
+      ...defaultSheetOptions
+    };
+  }).filter(sheet => sheet !== null); // Remove null sheets
+
+  if (sheets.length === 0) {
+    console.error('No valid sheets to export');
+    return;
+  }
+
+  // Export using ag-Grid's Excel export
+  const params = {
+    fileName: `${fileName}.xlsx`,
+    ...defaultGlobalOptions,
+    exportMode: 'xlsx',
+    sheetName: sheets[0].sheetName, // Primary sheet name
+    columnKeys: sheets[0].columns.map(col => col.field),
+    rowData: sheets[0].data,
+    // For multiple sheets, we need to use the onlySelected: false
+    // and handle multiple sheets through the API
+  };
+
+  // If we have ag-Grid API available, use it directly
+  if (typeof gridApi !== 'undefined' && gridApi) {
+    gridApi.exportDataAsExcel(params);
+  } else {
+    // Alternative approach using ExcelJS for custom multi-sheet export
+    exportWithExcelJS(sheets, fileName, defaultGlobalOptions);
+  }
+}
+
+/**
+ * Generate column definitions from data object
+ * @param {Object} dataObject - Sample data object
+ * @returns {Array} Column definitions
+ */
+function generateColumnDefs(dataObject) {
+  return Object.keys(dataObject).map(key => ({
+    field: key,
+    headerName: key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1'),
+    sortable: true,
+    filter: true,
+    resizable: true
+  }));
+}
+
+/**
+ * Alternative export method using ExcelJS for true multi-sheet support
+ * Requires: npm install exceljs
+ */
+async function exportWithExcelJS(sheets, fileName, options) {
+  try {
+    // Check if ExcelJS is available
+    if (typeof ExcelJS === 'undefined') {
+      console.error('ExcelJS library is required for multi-sheet export. Install with: npm install exceljs');
+      return;
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    
+    // Set workbook properties
+    workbook.creator = options.author || 'ag-Grid Export';
+    workbook.created = new Date();
+
+    sheets.forEach(sheetData => {
+      const worksheet = workbook.addWorksheet(sheetData.sheetName);
+      
+      // Add headers
+      const headers = sheetData.columns.map(col => col.headerName || col.field);
+      worksheet.addRow(headers);
+      
+      // Style headers
+      const headerRow = worksheet.getRow(1);
+      headerRow.font = { bold: true };
+      headerRow.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFE0E0E0' }
+      };
+
+      // Add data rows
+      sheetData.data.forEach(rowData => {
+        const row = sheetData.columns.map(col => rowData[col.field]);
+        worksheet.addRow(row);
+      });
+
+      // Auto-fit columns
+      worksheet.columns.forEach(column => {
+        column.width = sheetData.columnWidth || 15;
+      });
+
+      // Add borders and formatting
+      worksheet.eachRow((row, rowNumber) => {
+        row.eachCell(cell => {
+          cell.border = {
+            top: { style: 'thin' },
+            left: { style: 'thin' },
+            bottom: { style: 'thin' },
+            right: { style: 'thin' }
+          };
+        });
+      });
+    });
+
+    // Generate and download file
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { 
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+    });
+    
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${fileName}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+
+  } catch (error) {
+    console.error('Error exporting Excel file:', error);
+  }
+}
+
+/**
+ * Example usage function
+ */
+function exampleUsage() {
+  // Sample data for multiple sheets
+  const salesData = [
+    { id: 1, product: 'Laptop', amount: 1200, date: '2024-01-15', region: 'North' },
+    { id: 2, product: 'Mouse', amount: 25, date: '2024-01-16', region: 'South' },
+    { id: 3, product: 'Keyboard', amount: 75, date: '2024-01-17', region: 'East' }
+  ];
+
+  const customerData = [
+    { id: 1, name: 'John Doe', email: 'john@example.com', city: 'New York' },
+    { id: 2, name: 'Jane Smith', email: 'jane@example.com', city: 'Los Angeles' },
+    { id: 3, name: 'Bob Johnson', email: 'bob@example.com', city: 'Chicago' }
+  ];
+
+  const inventoryData = [
+    { sku: 'LAP001', item: 'Gaming Laptop', stock: 15, price: 1299.99 },
+    { sku: 'MOU001', item: 'Wireless Mouse', stock: 150, price: 29.99 },
+    { sku: 'KEY001', item: 'Mechanical Keyboard', stock: 75, price: 89.99 }
+  ];
+
+  // Define sheets with custom column definitions
+  const sheetsData = [
+    {
+      sheetName: 'Sales Report',
+      rowData: salesData,
+      columnDefs: [
+        { field: 'id', headerName: 'ID', width: 80 },
+        { field: 'product', headerName: 'Product', width: 150 },
+        { field: 'amount', headerName: 'Amount ($)', width: 120 },
+        { field: 'date', headerName: 'Date', width: 120 },
+        { field: 'region', headerName: 'Region', width: 100 }
+      ],
+      sheetOptions: {
+        columnWidth: 120
+      }
+    },
+    {
+      sheetName: 'Customers',
+      rowData: customerData,
+      columnDefs: [
+        { field: 'id', headerName: 'Customer ID', width: 100 },
+        { field: 'name', headerName: 'Full Name', width: 150 },
+        { field: 'email', headerName: 'Email Address', width: 200 },
+        { field: 'city', headerName: 'City', width: 120 }
+      ]
+    },
+    {
+      sheetName: 'Inventory',
+      rowData: inventoryData,
+      // Column definitions will be auto-generated
+      sheetOptions: {
+        columnWidth: 130
+      }
+    }
+  ];
+
+  // Export the multi-sheet Excel file
+  exportMultiSheetExcel(sheetsData, 'business-report', {
+    author: 'Business Analytics Team',
+    fontSize: 10
+  });
+}
+
+// Export the main function for use in modules
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { exportMultiSheetExcel, generateColumnDefs };
+}
