@@ -1,0 +1,383 @@
+import pandas as pd
+import numpy as np
+from typing import List, Dict, Any, Tuple
+
+def normalize_datatype(datatype: str) -> str:
+    """
+    Normalize equivalent datatypes that don't impact rules
+    char <-> varchar, integer <-> numeric are considered equivalent
+    """
+    if pd.isna(datatype):
+        return str(datatype)
+    
+    datatype_lower = str(datatype).lower().strip()
+    
+    # Normalize char/varchar variants
+    if any(char_type in datatype_lower for char_type in ['char', 'varchar', 'character']):
+        return 'char_type'
+    
+    # Normalize integer/numeric variants  
+    if any(num_type in datatype_lower for num_type in ['integer', 'int', 'numeric', 'number', 'decimal']):
+        return 'numeric_type'
+    
+    return datatype_lower
+
+def create_comparison_signature(row: pd.Series) -> str:
+    """
+    Create a signature for comparison based on the key fields,
+    considering business rule exceptions
+    """
+    # Get sub_division to check for existence rules
+    sub_division = str(row.get('sub_dimension', '')).lower().strip()
+    
+    # Core comparison fields
+    mand_ind = str(row.get('mand_ind', '')).strip()
+    mand_cond_expr = str(row.get('mand_cond_expr', '')).strip()
+    physical_data_type = normalize_datatype(row.get('phy_data_type'))
+    datatype_len_prec = str(row.get('fatatype_len_pres', '')).strip()
+    sn = str(row.get('sn', '')).strip()
+    
+    # For existence rules, exclude vld_val from signature
+    if sub_division == 'existence':
+        vld_val_part = 'EXISTENCE_IGNORE_VLD_VAL'
+    else:
+        vld_val_part = str(row.get('vld_val', '')).strip()
+    
+    # Create signature - order matters for consistent grouping
+    signature_parts = [
+        f"mand_ind:{mand_ind}",
+        f"mand_cond_expr:{mand_cond_expr}", 
+        f"physical_data_type:{physical_data_type}",
+        f"datatype_len_prec:{datatype_len_prec}",
+        f"vld_val:{vld_val_part}",
+        f"sn:{sn}",
+        f"sub_division:{sub_division}"
+    ]
+    
+    return "|".join(signature_parts)
+
+def are_records_equivalent(row1: pd.Series, row2: pd.Series) -> bool:
+    """
+    Check if two records are equivalent based on business rules
+    """
+    sig1 = create_comparison_signature(row1)
+    sig2 = create_comparison_signature(row2)
+    
+    # If signatures match, they're equivalent
+    if sig1 == sig2:
+        return True
+    
+    # Additional check: if only attribute name changed but sn is same
+    sn1 = str(row1.get('sn', '')).strip()
+    sn2 = str(row2.get('sn', '')).strip()
+    
+    if sn1 == sn2 and sn1 != '' and sn1 != 'nan':
+        # Check if all other comparison fields are the same
+        fields_to_check = [
+            'mand_ind', 'mand_cond_expr', 'phy_data_type', 
+            'fatatype_len_pres', 'sub_dimension'
+        ]
+        
+        # For non-existence rules, also check vld_val
+        sub_div1 = str(row1.get('sub_dimension', '')).lower().strip()
+        if sub_div1 != 'existence':
+            fields_to_check.append('vld_val')
+        
+        all_same = True
+        for field in fields_to_check:
+            val1 = row1.get(field, '')
+            val2 = row2.get(field, '')
+            
+            # Special handling for data type normalization
+            if field == 'phy_data_type':
+                if normalize_datatype(val1) != normalize_datatype(val2):
+                    all_same = False
+                    break
+            else:
+                if str(val1).strip() != str(val2).strip():
+                    all_same = False
+                    break
+        
+        return all_same
+    
+    return False
+
+def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Process the dataframe according to the specified requirements
+    """
+    # Create a copy to avoid modifying original
+    df_work = df.copy()
+    
+    # Ensure version column is numeric for max calculation
+    df_work['ver'] = pd.to_numeric(df_work['ver'], errors='coerce')
+    
+    # First, let's create equivalence groups across the entire dataset
+    # not just within catalog groups, because rules can be similar across different catalogs
+    equivalence_groups = []
+    processed_indices = set()
+    
+    # Sort by catalog identifiers and version for consistent processing
+    df_work = df_work.sort_values([
+        'catalog_dictionary_name', 
+        'catalog_collection_name', 
+        'catalog_attribute_name',
+        'ver'
+    ])
+    
+    for idx1, row1 in df_work.iterrows():
+        if idx1 in processed_indices:
+            continue
+        
+        current_group = [idx1]
+        processed_indices.add(idx1)
+        
+        # Find all equivalent records
+        for idx2, row2 in df_work.iterrows():
+            if idx2 in processed_indices or idx1 == idx2:
+                continue
+            
+            # Only group within same catalog combination
+            if (row1['catalog_dictionary_name'] == row2['catalog_dictionary_name'] and
+                row1['catalog_collection_name'] == row2['catalog_collection_name'] and
+                row1['catalog_attribute_name'] == row2['catalog_attribute_name']):
+                
+                if are_records_equivalent(row1, row2):
+                    current_group.append(idx2)
+                    processed_indices.add(idx2)
+        
+        equivalence_groups.append(current_group)
+    
+    result_rows = []
+    
+    # Process each equivalence group
+    for group_indices in equivalence_groups:
+        group_df = df_work.loc[group_indices].copy()
+        
+        # Get the record with maximum version for this group
+        max_version_idx = group_df['ver'].idxmax()
+        latest_record = group_df.loc[max_version_idx]
+        
+        # For attribute name and rule expression text, use latest version
+        # but for sn, if it's the same across versions, keep it consistent
+        sn_values = group_df['sn'].dropna().unique()
+        consistent_sn = sn_values[0] if len(sn_values) == 1 else latest_record.get('sn', '')
+        
+        # Create consolidated record
+        consolidated_record = {
+            'catalog_dictionary_name': latest_record['catalog_dictionary_name'],
+            'catalog_collection_name': latest_record['catalog_collection_name'], 
+            'catalog_attribute_name': latest_record['catalog_attribute_name'],  # Latest version
+            'dimension': latest_record.get('dimension', ''),
+            'sub_dimension': latest_record.get('sub_dimension', ''),
+            'mand_ind': latest_record.get('mand_ind', ''),
+            'mand_cond_expr': latest_record.get('mand_cond_expr', ''),
+            'physical_data_type': latest_record.get('phy_data_type', ''),
+            'datatype_len_prec': latest_record.get('fatatype_len_pres', ''),
+            'vld_val': latest_record.get('vld_val', ''),
+            'sn': consistent_sn,
+            'rule_expression_english_text': latest_record.get('rule_expression_english_test', ''),  # Latest version
+            'applicable_versions': ','.join(map(str, sorted(group_df['ver'].dropna().astype(int).unique().tolist())))
+        }
+        
+        result_rows.append(consolidated_record)
+    
+    return pd.DataFrame(result_rows)
+
+def get_detailed_comparison_report(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Generate a detailed report showing what records are being grouped together
+    """
+    df_work = df.copy()
+    df_work['ver'] = pd.to_numeric(df_work['ver'], errors='coerce')
+    df_work = df_work.sort_values([
+        'catalog_dictionary_name', 
+        'catalog_collection_name', 
+        'catalog_attribute_name',
+        'ver'
+    ])
+    
+    report_rows = []
+    equivalence_groups = []
+    processed_indices = set()
+    
+    for idx1, row1 in df_work.iterrows():
+        if idx1 in processed_indices:
+            continue
+        
+        current_group = [idx1]
+        processed_indices.add(idx1)
+        
+        for idx2, row2 in df_work.iterrows():
+            if idx2 in processed_indices or idx1 == idx2:
+                continue
+            
+            if (row1['catalog_dictionary_name'] == row2['catalog_dictionary_name'] and
+                row1['catalog_collection_name'] == row2['catalog_collection_name'] and
+                row1['catalog_attribute_name'] == row2['catalog_attribute_name']):
+                
+                if are_records_equivalent(row1, row2):
+                    current_group.append(idx2)
+                    processed_indices.add(idx2)
+        
+        equivalence_groups.append(current_group)
+    
+    for i, group_indices in enumerate(equivalence_groups):
+        group_df = df_work.loc[group_indices]
+        versions = sorted(group_df['ver'].dropna().astype(int).unique().tolist())
+        
+        for idx in group_indices:
+            row = df_work.loc[idx]
+            report_rows.append({
+                'group_id': i,
+                'catalog_dictionary_name': row['catalog_dictionary_name'],
+                'catalog_collection_name': row['catalog_collection_name'],
+                'catalog_attribute_name': row['catalog_attribute_name'],
+                'version': row['ver'],
+                'sn': row.get('sn', ''),
+                'sub_dimension': row.get('sub_dimension', ''),
+                'mand_ind': row.get('mand_ind', ''),
+                'physical_data_type': row.get('phy_data_type', ''),
+                'vld_val': row.get('vld_val', ''),
+                'rule_expression_english_test': row.get('rule_expression_english_test', ''),
+                'comparison_signature': create_comparison_signature(row),
+                'grouped_versions': ','.join(map(str, versions)),
+                'total_versions_in_group': len(versions)
+            })
+    
+    return pd.DataFrame(report_rows)
+
+# Example usage and testing
+def main():
+    """
+    Example of how to use the processing function
+    """
+    # Load your dataframe
+    # df = pd.read_csv('your_file.csv')
+    
+    # Process the dataframe
+    # result_df = process_dataframe(df)
+    
+    # Get detailed comparison report (optional, for analysis)
+    # comparison_report = get_detailed_comparison_report(df)
+    
+    # Display or save results
+    # print("Processed Results:")
+    # print(result_df.head())
+    # 
+    # print("\nComparison Report:")
+    # print(comparison_report.head())
+    
+    # result_df.to_csv('consolidated_dq_rules.csv', index=False)
+    # comparison_report.to_csv('grouping_analysis.csv', index=False)
+    
+    pass
+
+def test_equivalence_logic():
+    """
+    Test the equivalence logic with sample data
+    """
+    print("Testing equivalence logic...")
+    
+    # Test 1: Same SN, different attribute names
+    row1 = pd.Series({
+        'sn': 'SN001',
+        'catalog_attribute_name': 'old_attr_name',
+        'mand_ind': 'Y',
+        'mand_cond_expr': 'condition1',
+        'phy_data_type': 'char',
+        'fatatype_len_pres': '10',
+        'vld_val': 'value1',
+        'sub_dimension': 'completeness',
+        'rule_expression_english_test': 'old rule text'
+    })
+    
+    row2 = pd.Series({
+        'sn': 'SN001',
+        'catalog_attribute_name': 'new_attr_name',  # Different name
+        'mand_ind': 'Y',
+        'mand_cond_expr': 'condition1',
+        'phy_data_type': 'char',
+        'fatatype_len_pres': '10', 
+        'vld_val': 'value1',
+        'sub_dimension': 'completeness',
+        'rule_expression_english_test': 'new rule text'  # Different rule text
+    })
+    
+    result1 = are_records_equivalent(row1, row2)
+    print(f"Test 1 - Same SN, different attr names (should be True): {result1}")
+    
+    # Test 2: Char vs Varchar equivalence
+    row3 = pd.Series({
+        'sn': 'SN002',
+        'mand_ind': 'Y',
+        'mand_cond_expr': 'condition1',
+        'phy_data_type': 'char',
+        'fatatype_len_pres': '10',
+        'vld_val': 'value1',
+        'sub_dimension': 'conformity'
+    })
+    
+    row4 = pd.Series({
+        'sn': 'SN002', 
+        'mand_ind': 'Y',
+        'mand_cond_expr': 'condition1',
+        'phy_data_type': 'varchar',  # Different but equivalent
+        'fatatype_len_pres': '10',
+        'vld_val': 'value1',
+        'sub_dimension': 'conformity'
+    })
+    
+    result2 = are_records_equivalent(row3, row4)
+    print(f"Test 2 - Char vs Varchar equivalence (should be True): {result2}")
+    
+    # Test 3: Existence rule with different vld_val
+    row5 = pd.Series({
+        'sn': 'SN003',
+        'mand_ind': 'Y',
+        'mand_cond_expr': 'condition1', 
+        'phy_data_type': 'char',
+        'fatatype_len_pres': '10',
+        'vld_val': 'value1',
+        'sub_dimension': 'existence'
+    })
+    
+    row6 = pd.Series({
+        'sn': 'SN003',
+        'mand_ind': 'Y',
+        'mand_cond_expr': 'condition1',
+        'phy_data_type': 'char', 
+        'fatatype_len_pres': '10',
+        'vld_val': 'value2',  # Different vld_val
+        'sub_dimension': 'existence'
+    })
+    
+    result3 = are_records_equivalent(row5, row6)
+    print(f"Test 3 - Existence rule, different vld_val (should be True): {result3}")
+    
+    # Test 4: Different SN, should not be equivalent
+    row7 = pd.Series({
+        'sn': 'SN004',
+        'mand_ind': 'Y',
+        'mand_cond_expr': 'condition1',
+        'phy_data_type': 'char',
+        'fatatype_len_pres': '10',
+        'vld_val': 'value1',
+        'sub_dimension': 'completeness'
+    })
+    
+    row8 = pd.Series({
+        'sn': 'SN005',  # Different SN
+        'mand_ind': 'Y',
+        'mand_cond_expr': 'condition1',
+        'phy_data_type': 'char',
+        'fatatype_len_pres': '10',
+        'vld_val': 'value1', 
+        'sub_dimension': 'completeness'
+    })
+    
+    result4 = are_records_equivalent(row7, row8)
+    print(f"Test 4 - Different SN (should be False): {result4}")
+
+if __name__ == "__main__":
+    test_equivalence_logic()
