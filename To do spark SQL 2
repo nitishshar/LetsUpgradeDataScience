@@ -1,0 +1,310 @@
+import json
+from typing import Dict, List, Any
+from crewai import Agent, Task, Crew, Process
+from crewai.tools import BaseTool
+from pydantic import BaseModel, Field
+
+class SQLGeneratorTool(BaseTool):
+name: str = “sql_generator”
+description: str = “Generates Spark SQL based on mappings and rules”
+
+```
+def _run(self, logical_physical_mapping: str, rule_text: str, examples: str, template: str) -> str:
+    # This tool can be extended to include additional logic if needed
+    return f"Generated SQL based on mapping: {logical_physical_mapping}, rule: {rule_text}"
+```
+
+class SQLValidatorTool(BaseTool):
+name: str = “sql_validator”  
+description: str = “Validates generated Spark SQL for syntax and logical correctness”
+
+```
+def _run(self, sql_query: str, mapping: str) -> str:
+    # Add your validation logic here
+    # This could include syntax checking, column validation, etc.
+    validation_result = {
+        "is_valid": True,  # Replace with actual validation
+        "errors": [],
+        "warnings": [],
+        "suggestions": []
+    }
+    return json.dumps(validation_result, indent=2)
+```
+
+class SparkSQLGenerator:
+def **init**(self, logical_physical_mapping: Dict, rule_json: Dict, examples: List[Dict], sql_template: str):
+self.logical_physical_mapping = logical_physical_mapping
+self.rule_json = rule_json
+self.examples = examples
+self.sql_template = sql_template
+
+```
+    # Initialize tools
+    self.sql_generator_tool = SQLGeneratorTool()
+    self.sql_validator_tool = SQLValidatorTool()
+    
+    # Create agents
+    self.sql_generator_agent = Agent(
+        role='SQL Generator Specialist',
+        goal='Generate accurate Spark SQL queries based on logical-physical mappings and business rules',
+        backstory="""You are an expert SQL developer with deep knowledge of Spark SQL syntax and optimization.
+        You excel at translating business rules into efficient SQL queries using proper column mappings and table structures.
+        You understand data warehouse concepts and can create complex SELECT and WHERE clauses.""",
+        verbose=True,
+        allow_delegation=False,
+        tools=[self.sql_generator_tool]
+    )
+    
+    self.sql_validator_agent = Agent(
+        role='SQL Validation Expert',
+        goal='Validate generated SQL queries for syntax correctness, logical consistency, and best practices',
+        backstory="""You are a meticulous SQL reviewer with expertise in Spark SQL validation.
+        You catch syntax errors, logical inconsistencies, and performance issues. You ensure that
+        generated queries follow best practices and will execute successfully in a Spark environment.""",
+        verbose=True,
+        allow_delegation=False,
+        tools=[self.sql_validator_tool]
+    )
+
+def create_generation_prompt(self) -> str:
+    """Create the prompt for SQL generation"""
+    examples_text = "\n\n".join([
+        f"Example {i+1}:\nRule: {ex.get('rule', 'N/A')}\nGenerated SQL:\n```sql\n{ex.get('sql', 'N/A')}\n```"
+        for i, ex in enumerate(self.examples)
+    ])
+    
+    return f"""
+    ## Task: Generate Spark SQL Query
+    
+    You need to generate a Spark SQL query by filling in the SELECT and WHERE clauses of the provided template.
+    
+    ### Logical-Physical Mapping:
+    ```json
+    {json.dumps(self.logical_physical_mapping, indent=2)}
+    ```
+    
+    ### Business Rule:
+    ```json
+    {json.dumps(self.rule_json, indent=2)}
+    ```
+    
+    ### SQL Template:
+    ```sql
+    {self.sql_template}
+    ```
+    
+    ### Examples for Reference:
+    {examples_text}
+    
+    ### Instructions:
+    1. Use the logical-physical mapping to translate logical field names to actual table columns
+    2. Parse the business rule to understand the filtering and selection criteria
+    3. Fill in the SELECT clause with appropriate columns based on the rule requirements
+    4. Fill in the WHERE clause with proper conditions derived from the business rule
+    5. Ensure proper Spark SQL syntax and best practices
+    6. Use appropriate table aliases and joins if needed
+    7. Consider data types and casting if necessary
+    
+    ### Output Requirements:
+    - Provide only the complete, executable Spark SQL query
+    - Ensure the query follows the template structure
+    - Include comments for complex logic
+    - Use proper formatting and indentation
+    
+    Generate the complete Spark SQL query now:
+    """
+
+def create_validation_prompt(self, generated_sql: str) -> str:
+    """Create the prompt for SQL validation"""
+    return f"""
+    ## Task: Validate Spark SQL Query
+    
+    Please thoroughly validate the following generated Spark SQL query against the provided mappings and requirements.
+    
+    ### Generated SQL Query:
+    ```sql
+    {generated_sql}
+    ```
+    
+    ### Logical-Physical Mapping:
+    ```json
+    {json.dumps(self.logical_physical_mapping, indent=2)}
+    ```
+    
+    ### Business Rule:
+    ```json
+    {json.dumps(self.rule_json, indent=2)}
+    ```
+    
+    ### Validation Checklist:
+    
+    #### Syntax Validation:
+    - [ ] Valid Spark SQL syntax
+    - [ ] Proper parentheses and brackets
+    - [ ] Correct SQL keywords and functions
+    - [ ] Valid column references
+    - [ ] Proper string quoting
+    
+    #### Mapping Validation:
+    - [ ] All logical fields correctly mapped to physical columns
+    - [ ] Table names match the mapping
+    - [ ] Column names exist in the specified tables
+    - [ ] Data types are compatible
+    
+    #### Logic Validation:
+    - [ ] WHERE clause correctly implements the business rule
+    - [ ] SELECT clause includes required columns
+    - [ ] Joins are necessary and correct
+    - [ ] Filtering logic matches rule requirements
+    
+    #### Best Practices:
+    - [ ] Query is optimized for Spark execution
+    - [ ] Proper use of aliases
+    - [ ] Appropriate use of functions
+    - [ ] No unnecessary complexity
+    
+    ### Validation Results:
+    Provide a detailed validation report in JSON format with:
+    - is_valid: boolean
+    - errors: list of critical issues that prevent execution
+    - warnings: list of potential issues or improvements
+    - suggestions: list of optimization recommendations
+    - corrected_sql: if errors found, provide corrected version
+    
+    Validation Report:
+    """
+
+def generate_sql(self) -> Dict[str, Any]:
+    """Generate SQL using CrewAI agents"""
+    
+    # Create tasks
+    generation_task = Task(
+        description=self.create_generation_prompt(),
+        agent=self.sql_generator_agent,
+        expected_output="A complete, executable Spark SQL query that implements the business rule using the provided mappings"
+    )
+    
+    validation_task = Task(
+        description="Validate the generated SQL query and provide detailed feedback",
+        agent=self.sql_validator_agent,
+        expected_output="A comprehensive validation report in JSON format with errors, warnings, and suggestions",
+        context=[generation_task]  # This task depends on the generation task
+    )
+    
+    # Create crew
+    crew = Crew(
+        agents=[self.sql_generator_agent, self.sql_validator_agent],
+        tasks=[generation_task, validation_task],
+        process=Process.sequential,
+        verbose=2
+    )
+    
+    # Execute the crew
+    result = crew.kickoff()
+    
+    return {
+        "generated_sql": generation_task.output,
+        "validation_report": validation_task.output,
+        "full_result": result
+    }
+```
+
+# Example usage
+
+def main():
+# Example logical-physical mapping
+logical_physical_mapping = {
+“customer_table”: {
+“table_name”: “customers”,
+“columns”: {
+“customer_id”: “cust_id”,
+“customer_name”: “cust_name”,
+“customer_email”: “email_addr”,
+“registration_date”: “reg_date”,
+“customer_status”: “status”
+}
+},
+“order_table”: {
+“table_name”: “orders”,
+“columns”: {
+“order_id”: “ord_id”,
+“customer_id”: “cust_id”,
+“order_date”: “ord_date”,
+“order_amount”: “amount”,
+“order_status”: “status”
+}
+}
+}
+
+```
+# Example rule
+rule_json = {
+    "rule_id": "ACTIVE_CUSTOMERS_HIGH_VALUE",
+    "description": "Get active customers with orders above $1000 in the last 30 days",
+    "conditions": [
+        {
+            "field": "customer_status",
+            "operator": "equals",
+            "value": "active"
+        },
+        {
+            "field": "order_amount", 
+            "operator": "greater_than",
+            "value": 1000
+        },
+        {
+            "field": "order_date",
+            "operator": "within_days",
+            "value": 30
+        }
+    ],
+    "select_fields": [
+        "customer_id",
+        "customer_name",
+        "customer_email",
+        "order_id",
+        "order_amount",
+        "order_date"
+    ]
+}
+
+# Example SQL examples
+examples = [
+    {
+        "rule": "Get customers with recent orders",
+        "sql": """SELECT c.cust_id, c.cust_name, o.ord_id, o.amount
+                 FROM customers c 
+                 JOIN orders o ON c.cust_id = o.cust_id
+                 WHERE o.ord_date >= date_sub(current_date(), 30)"""
+    }
+]
+
+# SQL template
+sql_template = """
+SELECT 
+    -- SELECT_CLAUSE_HERE
+FROM customers c
+LEFT JOIN orders o ON c.cust_id = o.cust_id  
+WHERE
+    -- WHERE_CLAUSE_HERE
+"""
+
+# Initialize generator
+generator = SparkSQLGenerator(
+    logical_physical_mapping=logical_physical_mapping,
+    rule_json=rule_json,
+    examples=examples,
+    sql_template=sql_template
+)
+
+# Generate SQL
+result = generator.generate_sql()
+
+print("Generated SQL:")
+print(result["generated_sql"])
+print("\nValidation Report:")
+print(result["validation_report"])
+```
+
+if **name** == “**main**”:
+main()
