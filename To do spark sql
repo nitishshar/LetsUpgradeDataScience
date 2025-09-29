@@ -1,0 +1,63 @@
+I’ll help you create a CrewAI setup for generating and validating Spark SQL based on your mappings and rules. Here’s a complete solution:​​​​​​​​​​​​​​​​
+
+I’ve created a comprehensive CrewAI solution for generating and validating Spark SQL. Here are the key components:
+
+## Key Features:
+
+1. **Two Specialized Agents**:
+
+- **SQL Generator Agent**: Translates business rules into Spark SQL using mappings
+- **SQL Validator Agent**: Validates generated SQL for syntax, logic, and best practices
+
+1. **Custom Tools**:
+
+- `SQLGeneratorTool`: Can be extended with additional generation logic
+- `SQLValidatorTool`: Validates SQL queries
+
+1. **Comprehensive Prompts**:
+
+- **Generation Prompt**: Includes mappings, rules, examples, and detailed instructions
+- **Validation Prompt**: Thorough checklist for syntax, mapping, logic, and best practices
+
+1. **Structured Workflow**:
+
+- Sequential process where validation depends on generation
+- Detailed output formatting with JSON validation reports
+
+## How to Use:
+
+1. **Install Dependencies**:
+
+```bash
+pip install crewai pydantic
+```
+
+1. **Customize Your Data**:
+
+- Replace the example `logical_physical_mapping` with your JSON
+- Update `rule_json` with your business rule
+- Add your SQL examples to the `examples` list
+- Modify the `sql_template` to match your structure
+
+1. **Run the Generator**:
+
+```python
+generator = SparkSQLGenerator(
+    logical_physical_mapping=your_mapping,
+    rule_json=your_rule,
+    examples=your_examples,
+    sql_template=your_template
+)
+
+result = generator.generate_sql()
+```
+
+## Key Benefits:
+
+- **Modular Design**: Easy to extend with additional tools and agents
+- **Detailed Validation**: Comprehensive error checking and suggestions
+- **Template-Based**: Maintains consistent SQL structure
+- **Example-Driven**: Uses your examples to guide generation
+- **Production Ready**: Includes error handling and structured outputs
+
+The solution handles the complete workflow from rule interpretation to SQL validation, making it perfect for automated SQL generation in data pipeline scenarios.​​​​​​​​​​​​​​​​
