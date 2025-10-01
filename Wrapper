@@ -1,0 +1,172 @@
+Yes, you can create your own wrapper! You need to implement a class that matches the interface CrewAI expects. Here’s how:
+
+## Create a Custom LLM Wrapper
+
+```python
+from openai import OpenAI
+from typing import Any, Optional, List
+
+class CustomLLMWrapper:
+    """Wrapper for your custom OpenAI client to work with CrewAI"""
+    
+    def __init__(self, client: OpenAI, model: str = "gpt-4", temperature: float = 0.7):
+        self.client = client
+        self.model = model
+        self.temperature = temperature
+        self.model_name = model  # CrewAI looks for this attribute
+    
+    def __call__(self, prompt: str, **kwargs) -> str:
+        """Main method CrewAI calls"""
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=kwargs.get("temperature", self.temperature),
+            **kwargs
+        )
+        return response.choices[0].message.content
+    
+    def invoke(self, prompt: str, **kwargs) -> str:
+        """Alternative method some versions expect"""
+        return self.__call__(prompt, **kwargs)
+    
+    def predict(self, text: str, **kwargs) -> str:
+        """Another interface method"""
+        return self.__call__(text, **kwargs)
+    
+    def bind(self, **kwargs):
+        """Returns self with updated kwargs"""
+        return self
+    
+    @property
+    def _llm_type(self) -> str:
+        """Return identifier for the LLM type"""
+        return "custom_openai"
+```
+
+## Usage with CrewAI
+
+```python
+from openai import OpenAI
+from crewai import Agent, Task, Crew
+
+# Your custom OpenAI client
+my_client = OpenAI(
+    base_url="https://your-custom-url.com/v1",
+    api_key="your-api-key"
+)
+
+# Wrap it
+custom_llm = CustomLLMWrapper(
+    client=my_client,
+    model="gpt-4",
+    temperature=0.7
+)
+
+# Use with CrewAI
+agent = Agent(
+    role='Researcher',
+    goal='Research topics',
+    backstory='Expert researcher',
+    llm=custom_llm
+)
+
+task = Task(
+    description='Research AI trends',
+    agent=agent,
+    expected_output='A report on AI trends'
+)
+
+crew = Crew(agents=[agent], tasks=[task])
+result = crew.kickoff()
+```
+
+## More Complete Implementation (If Needed)
+
+If you encounter more issues, here’s a more comprehensive wrapper:
+
+```python
+from openai import OpenAI
+from typing import Any, Optional, List, Dict
+
+class CustomLLMWrapper:
+    """Full-featured wrapper for OpenAI client"""
+    
+    def __init__(
+        self, 
+        client: OpenAI, 
+        model: str = "gpt-4",
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None
+    ):
+        self.client = client
+        self.model = model
+        self.model_name = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+    
+    def __call__(self, messages: Any, **kwargs) -> str:
+        """Handle both string prompts and message lists"""
+        # Convert string to messages format
+        if isinstance(messages, str):
+            messages = [{"role": "user", "content": messages}]
+        
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=kwargs.get("temperature", self.temperature),
+            max_tokens=kwargs.get("max_tokens", self.max_tokens),
+            **{k: v for k, v in kwargs.items() 
+               if k not in ['temperature', 'max_tokens']}
+        )
+        return response.choices[0].message.content
+    
+    def invoke(self, input: Any, **kwargs) -> Any:
+        """LangChain-style invoke"""
+        if isinstance(input, dict) and 'messages' in input:
+            return self.__call__(input['messages'], **kwargs)
+        return self.__call__(input, **kwargs)
+    
+    def predict(self, text: str, **kwargs) -> str:
+        """Prediction method"""
+        return self.__call__(text, **kwargs)
+    
+    def generate(self, prompts: List[str], **kwargs) -> List[str]:
+        """Batch generation"""
+        return [self.__call__(prompt, **kwargs) for prompt in prompts]
+    
+    def bind(self, **kwargs) -> 'CustomLLMWrapper':
+        """Return configured instance"""
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+        return self
+    
+    @property
+    def _llm_type(self) -> str:
+        return "custom_openai"
+    
+    @property
+    def _identifying_params(self) -> Dict[str, Any]:
+        """Return identifying parameters"""
+        return {
+            "model": self.model,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens
+        }
+```
+
+## Troubleshooting
+
+If you still get errors, you can debug what CrewAI is calling:
+
+```python
+class DebugLLMWrapper(CustomLLMWrapper):
+    def __getattr__(self, name):
+        print(f"CrewAI is trying to call: {name}")
+        return super().__getattr__(name)
+    
+    def __call__(self, *args, **kwargs):
+        print(f"Called with args: {args}, kwargs: {kwargs}")
+        return super().__call__(*args, **kwargs)
+```
+
+This approach gives you full control without LangChain dependencies. Does this work for your use case?​​​​​​​​​​​​​​​​
