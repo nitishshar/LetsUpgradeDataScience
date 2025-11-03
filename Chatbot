@@ -1,0 +1,584 @@
+“””
+RAG Chatbot for Rules with SQL Responses
+Handles: rule_name, rule_text, applicable_versions, mand_ind, phy_data_type, and SQL
+“””
+
+import gradio as gr
+import chromadb
+from chromadb.config import Settings
+from sentence_transformers import SentenceTransformer
+import json
+import pandas as pd
+from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
+import logging
+from datetime import datetime
+
+# Configure logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(**name**)
+
+@dataclass
+class RuleResult:
+“”“Structured result from rule search”””
+rule_name: str
+rule_text: str
+applicable_versions: str
+mand_ind: str
+phy_data_type: str
+sql: str
+distance: float
+metadata: Dict[str, Any]
+
+class RuleBasedRAGSystem:
+“”“RAG system for rules with SQL responses”””
+
+```
+def __init__(
+    self,
+    model_name: str = "all-MiniLM-L6-v2",
+    collection_name: str = "rules_sql_collection",
+    persist_directory: str = "./chroma_db"
+):
+    """Initialize the RAG system"""
+    self.model_name = model_name
+    self.collection_name = collection_name
+    
+    # Initialize sentence transformer
+    logger.info(f"Loading embedding model: {model_name}")
+    self.embedder = SentenceTransformer(model_name)
+    
+    # Initialize ChromaDB with persistence
+    self.chroma_client = chromadb.PersistentClient(
+        path=persist_directory,
+        settings=Settings(
+            anonymized_telemetry=False,
+            allow_reset=True
+        )
+    )
+    
+    # Create or get collection
+    self.collection = self.chroma_client.get_or_create_collection(
+        name=collection_name,
+        metadata={"hnsw:space": "cosine"}
+    )
+    
+    logger.info(f"Collection '{collection_name}' initialized with {self.collection.count()} rules")
+
+def add_rules(self, rules: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Add rules to the vector store
+    Expected format:
+    {
+        "rule_name": "...",
+        "rule_text": "...",
+        "applicable_versions": "...",
+        "mand_ind": "Y/N",
+        "phy_data_type": "...",
+        "response": "SELECT ..."  # SQL query
+    }
+    """
+    documents = []
+    metadatas = []
+    ids = []
+    
+    for idx, rule in enumerate(rules):
+        # Create searchable text from rule
+        rule_text = self._create_searchable_text(rule)
+        
+        # Extract fields with defaults
+        rule_name = rule.get("rule_name", f"rule_{idx}")
+        rule_description = rule.get("rule_text", "")
+        versions = rule.get("applicable_versions", "all")
+        mandatory = rule.get("mand_ind", "N")
+        data_type = rule.get("phy_data_type", "")
+        sql = rule.get("response", "")
+        
+        documents.append(rule_text)
+        metadatas.append({
+            "rule_name": rule_name,
+            "rule_text": rule_description,
+            "applicable_versions": versions,
+            "mand_ind": mandatory,
+            "phy_data_type": data_type,
+            "sql": sql,
+            "timestamp": datetime.now().isoformat(),
+            "raw_json": json.dumps(rule)
+        })
+        ids.append(f"rule_{idx}_{hash(rule_name)}")
+    
+    if documents:
+        self.collection.add(
+            documents=documents,
+            metadatas=metadatas,
+            ids=ids
+        )
+        logger.info(f"Successfully added {len(documents)} rules")
+        return {
+            "success": True,
+            "count": len(documents),
+            "message": f"✓ Added {len(documents)} rules to knowledge base"
+        }
+    
+    return {
+        "success": False,
+        "count": 0,
+        "message": "No rules to add"
+    }
+
+def _create_searchable_text(self, rule: Dict[str, Any]) -> str:
+    """Create rich searchable text from rule"""
+    parts = []
+    
+    # Rule name and text are most important
+    if "rule_name" in rule:
+        parts.append(f"Rule Name: {rule['rule_name']}")
+    
+    if "rule_text" in rule:
+        parts.append(f"Rule Description: {rule['rule_text']}")
+    
+    # Add version information
+    if "applicable_versions" in rule:
+        parts.append(f"Applicable Versions: {rule['applicable_versions']}")
+    
+    # Add mandatory indicator
+    if "mand_ind" in rule:
+        mandatory_text = "Mandatory" if rule["mand_ind"].upper() == "Y" else "Optional"
+        parts.append(f"Status: {mandatory_text}")
+    
+    # Add data type
+    if "phy_data_type" in rule:
+        parts.append(f"Data Type: {rule['phy_data_type']}")
+    
+    # Add SQL for searchability (extract table names and keywords)
+    if "response" in rule and rule["response"]:
+        sql = rule["response"]
+        # Extract keywords from SQL
+        sql_keywords = self._extract_sql_keywords(sql)
+        if sql_keywords:
+            parts.append(f"SQL Keywords: {sql_keywords}")
+    
+    return " | ".join(parts)
+
+def _extract_sql_keywords(self, sql: str) -> str:
+    """Extract meaningful keywords from SQL query"""
+    if not sql:
+        return ""
+    
+    # Extract table names after FROM and JOIN
+    import re
+    tables = re.findall(r'(?:FROM|JOIN)\s+(\w+)', sql, re.IGNORECASE)
+    
+    # Extract column names in WHERE clauses
+    columns = re.findall(r'WHERE\s+(\w+)', sql, re.IGNORECASE)
+    
+    keywords = []
+    if tables:
+        keywords.append(f"Tables: {', '.join(set(tables))}")
+    if columns:
+        keywords.append(f"Filters: {', '.join(set(columns))}")
+    
+    return " ".join(keywords)
+
+def search(
+    self,
+    query: str,
+    n_results: int = 5,
+    filter_mandatory: Optional[bool] = None,
+    filter_versions: Optional[str] = None
+) -> List[RuleResult]:
+    """Search rules with optional filters"""
+    
+    # Build where filter
+    where_filter = {}
+    if filter_mandatory is not None:
+        where_filter["mand_ind"] = "Y" if filter_mandatory else "N"
+    
+    if filter_versions:
+        where_filter["applicable_versions"] = filter_versions
+    
+    # Perform search
+    results = self.collection.query(
+        query_texts=[query],
+        n_results=n_results,
+        where=where_filter if where_filter else None
+    )
+    
+    rule_results = []
+    if results["documents"] and results["documents"][0]:
+        for metadata, distance in zip(
+            results["metadatas"][0],
+            results["distances"][0]
+        ):
+            rule_results.append(RuleResult(
+                rule_name=metadata.get("rule_name", "Unknown"),
+                rule_text=metadata.get("rule_text", ""),
+                applicable_versions=metadata.get("applicable_versions", ""),
+                mand_ind=metadata.get("mand_ind", ""),
+                phy_data_type=metadata.get("phy_data_type", ""),
+                sql=metadata.get("sql", ""),
+                distance=distance,
+                metadata=metadata
+            ))
+    
+    return rule_results
+
+def generate_response(
+    self,
+    query: str,
+    n_results: int = 3,
+    filter_mandatory: Optional[bool] = None
+) -> str:
+    """Generate formatted response with rules and SQL"""
+    results = self.search(query, n_results=n_results, filter_mandatory=filter_mandatory)
+    
+    if not results:
+        return "❌ No matching rules found for your query. Try rephrasing or check if rules are loaded."
+    
+    # Build response
+    response_parts = [f"# 🔍 Search Results for: *{query}*\n"]
+    response_parts.append(f"Found **{len(results)}** matching rule(s)\n")
+    response_parts.append("---\n")
+    
+    for idx, result in enumerate(results, 1):
+        relevance = (1 - result.distance) * 100
+        
+        response_parts.append(f"## 📋 Result {idx} - Relevance: {relevance:.1f}%\n")
+        response_parts.append(f"**Rule Name:** `{result.rule_name}`\n")
+        response_parts.append(f"**Rule Text:** {result.rule_text}\n")
+        response_parts.append(f"**Applicable Versions:** {result.applicable_versions}")
+        response_parts.append(f"**Mandatory:** {'Yes ✓' if result.mand_ind.upper() == 'Y' else 'No'}")
+        response_parts.append(f"**Data Type:** {result.phy_data_type}\n")
+        
+        # Display SQL
+        if result.sql:
+            response_parts.append("**SQL Query:**")
+            response_parts.append(f"```sql\n{result.sql}\n```\n")
+        else:
+            response_parts.append("*No SQL query available*\n")
+        
+        response_parts.append("---\n")
+    
+    return "\n".join(response_parts)
+
+def get_statistics(self) -> Dict[str, Any]:
+    """Get collection statistics"""
+    count = self.collection.count()
+    
+    # Get all metadata to compute stats
+    if count > 0:
+        all_data = self.collection.get()
+        metadatas = all_data["metadatas"]
+        
+        mandatory_count = sum(1 for m in metadatas if m.get("mand_ind", "").upper() == "Y")
+        
+        # Count by data type
+        data_types = {}
+        for m in metadatas:
+            dt = m.get("phy_data_type", "unknown")
+            data_types[dt] = data_types.get(dt, 0) + 1
+        
+        return {
+            "total_rules": count,
+            "mandatory_rules": mandatory_count,
+            "optional_rules": count - mandatory_count,
+            "data_types": data_types
+        }
+    
+    return {"total_rules": 0}
+
+def export_rules(self, output_format: str = "json") -> str:
+    """Export all rules"""
+    all_data = self.collection.get()
+    
+    if output_format == "json":
+        rules = []
+        for metadata in all_data["metadatas"]:
+            try:
+                rules.append(json.loads(metadata["raw_json"]))
+            except:
+                rules.append(metadata)
+        return json.dumps(rules, indent=2)
+    
+    return "Unsupported format"
+
+def reset_collection(self) -> None:
+    """Reset the collection"""
+    try:
+        self.chroma_client.delete_collection(name=self.collection_name)
+        self.collection = self.chroma_client.create_collection(
+            name=self.collection_name,
+            metadata={"hnsw:space": "cosine"}
+        )
+        logger.info("Collection reset successfully")
+        return "✓ Collection reset successfully"
+    except Exception as e:
+        logger.error(f"Error resetting collection: {e}")
+        return f"❌ Error resetting collection: {str(e)}"
+```
+
+def create_chatbot_interface(rag_system: RuleBasedRAGSystem):
+“”“Create Gradio interface”””
+
+```
+def chat_function(message, history, filter_mandatory):
+    """Process chat messages"""
+    if not message.strip():
+        return history + [[message, "Please enter a valid query."]]
+    
+    try:
+        filter_mand = None
+        if filter_mandatory == "Mandatory Only":
+            filter_mand = True
+        elif filter_mandatory == "Optional Only":
+            filter_mand = False
+        
+        response = rag_system.generate_response(message, n_results=3, filter_mandatory=filter_mand)
+        return history + [[message, response]]
+    except Exception as e:
+        logger.error(f"Error processing query: {e}")
+        return history + [[message, f"❌ Error: {str(e)}"]]
+
+def add_rules_json(json_input):
+    """Add rules from JSON input"""
+    try:
+        if not json_input.strip():
+            return "❌ Please provide JSON input"
+        
+        rules_data = json.loads(json_input)
+        
+        # Handle single rule or list of rules
+        if isinstance(rules_data, dict):
+            rules_data = [rules_data]
+        
+        result = rag_system.add_rules(rules_data)
+        
+        # Get updated stats
+        stats = rag_system.get_statistics()
+        stats_text = f"\n\n📊 **Database Statistics:**\n"
+        stats_text += f"- Total Rules: {stats.get('total_rules', 0)}\n"
+        stats_text += f"- Mandatory: {stats.get('mandatory_rules', 0)}\n"
+        stats_text += f"- Optional: {stats.get('optional_rules', 0)}"
+        
+        return result["message"] + stats_text
+        
+    except json.JSONDecodeError as e:
+        return f"❌ JSON parsing error: {str(e)}\n\nPlease check your JSON format."
+    except Exception as e:
+        logger.error(f"Error adding rules: {e}")
+        return f"❌ Error: {str(e)}"
+
+def show_statistics():
+    """Display collection statistics"""
+    stats = rag_system.get_statistics()
+    
+    if stats.get("total_rules", 0) == 0:
+        return "No rules in database yet. Add some rules to get started!"
+    
+    output = "# 📊 Database Statistics\n\n"
+    output += f"**Total Rules:** {stats.get('total_rules', 0)}\n"
+    output += f"**Mandatory Rules:** {stats.get('mandatory_rules', 0)}\n"
+    output += f"**Optional Rules:** {stats.get('optional_rules', 0)}\n\n"
+    
+    if "data_types" in stats and stats["data_types"]:
+        output += "**Data Types:**\n"
+        for dt, count in stats["data_types"].items():
+            output += f"- {dt}: {count}\n"
+    
+    return output
+
+def reset_database():
+    """Reset the database"""
+    result = rag_system.reset_collection()
+    return result + "\n\nAll rules have been deleted."
+
+# Create Gradio interface
+with gr.Blocks(title="Rules & SQL RAG Chatbot", theme=gr.themes.Soft()) as demo:
+    gr.Markdown("""
+    # 🤖 Rules & SQL Query Chatbot
+    ### Intelligent search across your business rules and SQL queries
+    """)
+    
+    with gr.Tabs():
+        # Chat Tab
+        with gr.Tab("💬 Chat Interface"):
+            chatbot = gr.Chatbot(
+                label="Conversation",
+                height=500,
+                show_copy_button=True,
+                avatar_images=(None, "🤖")
+            )
+            
+            with gr.Row():
+                msg = gr.Textbox(
+                    label="Ask about rules",
+                    placeholder="e.g., 'Show me mandatory rules for customer validation'",
+                    lines=2,
+                    scale=4
+                )
+                filter_dropdown = gr.Dropdown(
+                    choices=["All Rules", "Mandatory Only", "Optional Only"],
+                    value="All Rules",
+                    label="Filter",
+                    scale=1
+                )
+            
+            with gr.Row():
+                submit = gr.Button("🔍 Search", variant="primary", scale=1)
+                clear = gr.Button("🗑️ Clear Chat", scale=1)
+            
+            gr.Examples(
+                examples=[
+                    "Show me all mandatory rules",
+                    "Find rules related to customer data",
+                    "What are the validation rules?",
+                    "Show me rules with SQL queries for user table",
+                    "List all rules for version 2.0"
+                ],
+                inputs=msg,
+                label="Example Queries"
+            )
+        
+        # Add Rules Tab
+        with gr.Tab("➕ Add Rules"):
+            gr.Markdown("""
+            ### Add Rules to Knowledge Base
+            Paste your JSON data below. Format:
+            ```json
+            [
+              {
+                "rule_name": "Rule Name",
+                "rule_text": "Description of the rule",
+                "applicable_versions": "1.0, 2.0",
+                "mand_ind": "Y",
+                "phy_data_type": "VARCHAR",
+                "response": "SELECT * FROM table WHERE condition"
+              }
+            ]
+            ```
+            """)
+            
+            json_input = gr.TextArea(
+                label="JSON Rules Data",
+                placeholder='Paste your JSON here...',
+                lines=15
+            )
+            
+            with gr.Row():
+                add_btn = gr.Button("📥 Add to Database", variant="primary")
+                example_btn = gr.Button("📝 Load Example")
+            
+            output = gr.Markdown(label="Status")
+            
+            def load_example():
+                example = [
+                    {
+                        "rule_name": "customer_email_validation",
+                        "rule_text": "Validate customer email format and domain",
+                        "applicable_versions": "1.0, 2.0, 3.0",
+                        "mand_ind": "Y",
+                        "phy_data_type": "VARCHAR(255)",
+                        "response": "SELECT email FROM customers WHERE email LIKE '%@%.%' AND email NOT LIKE '%@%.%.%'"
+                    },
+                    {
+                        "rule_name": "order_amount_check",
+                        "rule_text": "Check if order amount exceeds threshold",
+                        "applicable_versions": "2.0, 3.0",
+                        "mand_ind": "N",
+                        "phy_data_type": "DECIMAL(10,2)",
+                        "response": "SELECT order_id, amount FROM orders WHERE amount > 1000"
+                    }
+                ]
+                return json.dumps(example, indent=2)
+            
+            example_btn.click(fn=load_example, outputs=json_input)
+            add_btn.click(fn=add_rules_json, inputs=json_input, outputs=output)
+        
+        # Statistics Tab
+        with gr.Tab("📊 Statistics"):
+            stats_display = gr.Markdown()
+            with gr.Row():
+                refresh_stats = gr.Button("🔄 Refresh Statistics", variant="primary")
+                reset_btn = gr.Button("⚠️ Reset Database", variant="stop")
+            
+            reset_output = gr.Markdown()
+            
+            refresh_stats.click(fn=show_statistics, outputs=stats_display)
+            reset_btn.click(fn=reset_database, outputs=reset_output)
+    
+    # Connect chat functionality
+    submit.click(
+        fn=chat_function,
+        inputs=[msg, chatbot, filter_dropdown],
+        outputs=chatbot
+    ).then(
+        lambda: "",
+        outputs=msg
+    )
+    
+    msg.submit(
+        fn=chat_function,
+        inputs=[msg, chatbot, filter_dropdown],
+        outputs=chatbot
+    ).then(
+        lambda: "",
+        outputs=msg
+    )
+    
+    clear.click(lambda: [], outputs=chatbot)
+    
+    # Load initial statistics
+    demo.load(fn=show_statistics, outputs=stats_display)
+
+return demo
+```
+
+# Main execution
+
+if **name** == “**main**”:
+# Initialize RAG system
+rag = RuleBasedRAGSystem(
+model_name=“all-MiniLM-L6-v2”,
+collection_name=“rules_sql_collection”,
+persist_directory=”./chroma_db”
+)
+
+```
+# Sample data matching your schema
+sample_rules = [
+    {
+        "rule_name": "customer_name_validation",
+        "rule_text": "Validate customer name is not null and has minimum length",
+        "applicable_versions": "1.0, 2.0, 3.0",
+        "mand_ind": "Y",
+        "phy_data_type": "VARCHAR(100)",
+        "response": "SELECT customer_id, name FROM customers WHERE name IS NOT NULL AND LENGTH(name) >= 2"
+    },
+    {
+        "rule_name": "product_price_range",
+        "rule_text": "Check product price is within acceptable range",
+        "applicable_versions": "2.0, 3.0",
+        "mand_ind": "N",
+        "phy_data_type": "DECIMAL(10,2)",
+        "response": "SELECT product_id, price FROM products WHERE price BETWEEN 10 AND 10000"
+    },
+    {
+        "rule_name": "order_status_tracking",
+        "rule_text": "Track order status changes and timestamps",
+        "applicable_versions": "1.0, 2.0, 3.0",
+        "mand_ind": "Y",
+        "phy_data_type": "VARCHAR(50)",
+        "response": "SELECT order_id, status, updated_at FROM orders WHERE status IN ('pending', 'processing', 'shipped')"
+    }
+]
+
+# Add sample rules if collection is empty
+if rag.collection.count() == 0:
+    rag.add_rules(sample_rules)
+    logger.info("Added sample rules to get started")
+
+# Create and launch interface
+demo = create_chatbot_interface(rag)
+demo.launch(share=False, server_name="0.0.0.0", server_port=7860)
+```
