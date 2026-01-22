@@ -1,0 +1,917 @@
+// ============================================================================
+// 1. DOMAIN MODELS
+// ============================================================================
+
+package com.datacatalog.drools.model;
+
+import lombok.Data;
+import lombok.Builder;
+import java.util.List;
+import java.util.Map;
+
+@Data
+@Builder
+public class DataCatalogElement {
+    private String dictionary;
+    private String collection;
+    private String attribute;
+    private String physicalTable;
+    private String physicalColumn;
+    private String dataType;
+    private String description;
+}
+
+@Data
+@Builder
+public class ValidationResult {
+    private boolean valid;
+    private String substitutedRule;
+    private List<ValidationError> errors;
+    private Map<String, String> substitutions;
+    private String droolsRule;
+}
+
+@Data
+@Builder
+public class ValidationError {
+    private ErrorType type;
+    private String message;
+    private String location;
+    private String suggestion;
+    
+    public enum ErrorType {
+        UNKNOWN_DATA_ELEMENT,
+        SYNTAX_ERROR,
+        MISSING_PARENTHESIS,
+        INVALID_OPERATOR,
+        TYPE_MISMATCH
+    }
+}
+
+@Data
+public class RuleValidationRequest {
+    private String partialDroolRule;
+    private String ruleName;
+    private String ruleDescription;
+    private String action; // "ERROR", "WARNING", etc.
+}
+
+@Data
+@Builder
+public class RuleValidationResponse {
+    private String requestId;
+    private ValidationResult validationResult;
+    private long processingTimeMs;
+}
+
+@Data
+public class JavaClassGenerationRequest {
+    private String outputDirectory;
+    private boolean generateLombok;
+    private boolean generateJPA;
+}
+
+@Data
+@Builder
+public class JavaClassGenerationResponse {
+    private List<GeneratedClass> generatedClasses;
+    private int totalClassesGenerated;
+    private String outputPath;
+}
+
+@Data
+@Builder
+public class GeneratedClass {
+    private String className;
+    private String packageName;
+    private String filePath;
+    private int attributeCount;
+}
+
+// ============================================================================
+// 2. REPOSITORY LAYER - Data Catalog Access
+// ============================================================================
+
+package com.datacatalog.drools.repository;
+
+import com.datacatalog.drools.model.DataCatalogElement;
+import org.springframework.stereotype.Repository;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
+import javax.annotation.PostConstruct;
+import java.io.File;
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Repository
+public class DataCatalogRepository {
+    
+    private final ObjectMapper objectMapper;
+    private final Map<String, DataCatalogElement> catalogIndex;
+    private final String catalogFilePath;
+    
+    public DataCatalogRepository(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+        this.catalogIndex = new HashMap<>();
+        this.catalogFilePath = "data-catalog.json";
+    }
+    
+    @PostConstruct
+    public void loadCatalog() throws Exception {
+        File catalogFile = new File(catalogFilePath);
+        List<DataCatalogElement> elements = objectMapper.readValue(
+            catalogFile, 
+            new TypeReference<List<DataCatalogElement>>() {}
+        );
+        
+        // Index by full path: Dictionary.Collection.Attribute
+        for (DataCatalogElement element : elements) {
+            String key = buildKey(element.getDictionary(), 
+                                 element.getCollection(), 
+                                 element.getAttribute());
+            catalogIndex.put(key, element);
+        }
+    }
+    
+    public Optional<DataCatalogElement> findElement(String dictionary, 
+                                                    String collection, 
+                                                    String attribute) {
+        String key = buildKey(dictionary, collection, attribute);
+        return Optional.ofNullable(catalogIndex.get(key));
+    }
+    
+    public List<DataCatalogElement> findByCollection(String dictionary, 
+                                                     String collection) {
+        return catalogIndex.values().stream()
+            .filter(e -> e.getDictionary().equals(dictionary) && 
+                        e.getCollection().equals(collection))
+            .collect(Collectors.toList());
+    }
+    
+    public Set<String> getAllCollections() {
+        return catalogIndex.values().stream()
+            .map(e -> e.getDictionary() + "." + e.getCollection())
+            .collect(Collectors.toSet());
+    }
+    
+    private String buildKey(String dictionary, String collection, String attribute) {
+        return String.format("%s.%s.%s", dictionary, collection, attribute);
+    }
+}
+
+// ============================================================================
+// 3. SERVICE LAYER - Rule Parser
+// ============================================================================
+
+package com.datacatalog.drools.service;
+
+import com.datacatalog.drools.model.*;
+import org.springframework.stereotype.Component;
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
+import java.util.*;
+
+@Component
+public class DroolsRuleParser {
+    
+    // Pattern to match <Dictionary.Collection.Attribute>
+    private static final Pattern ELEMENT_PATTERN = 
+        Pattern.compile("<([^>]+?)>");
+    
+    // Pattern to match <Dictionary.Collection>:(conditions)
+    private static final Pattern RULE_PATTERN = 
+        Pattern.compile("<([^>]+?)>:\\(([^)]+)\\)");
+    
+    public ParsedRule parsePartialRule(String partialRule) {
+        ParsedRule parsed = new ParsedRule();
+        
+        Matcher matcher = RULE_PATTERN.matcher(partialRule);
+        if (!matcher.find()) {
+            parsed.setValid(false);
+            parsed.addError("Invalid rule format. Expected: <Dictionary.Collection>:(conditions)");
+            return parsed;
+        }
+        
+        String collectionPath = matcher.group(1);
+        String conditions = matcher.group(2);
+        
+        String[] parts = collectionPath.split("\\.");
+        if (parts.length != 2) {
+            parsed.setValid(false);
+            parsed.addError("Collection path must be Dictionary.Collection");
+            return parsed;
+        }
+        
+        parsed.setDictionary(parts[0].trim());
+        parsed.setCollection(parts[1].trim());
+        parsed.setRawConditions(conditions);
+        parsed.setDataElements(extractDataElements(conditions));
+        parsed.setValid(true);
+        
+        return parsed;
+    }
+    
+    public List<String> extractDataElements(String text) {
+        List<String> elements = new ArrayList<>();
+        Matcher matcher = ELEMENT_PATTERN.matcher(text);
+        
+        while (matcher.find()) {
+            elements.add(matcher.group(1));
+        }
+        
+        return elements;
+    }
+    
+    @lombok.Data
+    public static class ParsedRule {
+        private boolean valid;
+        private String dictionary;
+        private String collection;
+        private String rawConditions;
+        private List<String> dataElements = new ArrayList<>();
+        private List<String> errors = new ArrayList<>();
+        
+        public void addError(String error) {
+            errors.add(error);
+        }
+    }
+}
+
+// ============================================================================
+// 4. SERVICE LAYER - Rule Validator
+// ============================================================================
+
+package com.datacatalog.drools.service;
+
+import com.datacatalog.drools.model.*;
+import com.datacatalog.drools.repository.DataCatalogRepository;
+import org.springframework.stereotype.Service;
+import lombok.RequiredArgsConstructor;
+import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+@Service
+@RequiredArgsConstructor
+public class DroolsRuleValidatorService {
+    
+    private final DataCatalogRepository catalogRepository;
+    private final DroolsRuleParser ruleParser;
+    private final DroolsRuleSubstitutionService substitutionService;
+    private final DroolsSyntaxValidator syntaxValidator;
+    
+    public ValidationResult validateAndSubstitute(String partialRule) {
+        List<ValidationError> errors = new ArrayList<>();
+        Map<String, String> substitutions = new HashMap<>();
+        
+        // Step 1: Parse the rule
+        DroolsRuleParser.ParsedRule parsed = ruleParser.parsePartialRule(partialRule);
+        
+        if (!parsed.isValid()) {
+            return ValidationResult.builder()
+                .valid(false)
+                .errors(parsed.getErrors().stream()
+                    .map(msg -> ValidationError.builder()
+                        .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                        .message(msg)
+                        .build())
+                    .collect(java.util.stream.Collectors.toList()))
+                .build();
+        }
+        
+        // Step 2: Validate all data elements exist in catalog
+        for (String element : parsed.getDataElements()) {
+            Optional<DataCatalogElement> catalogElement = 
+                catalogRepository.findElement(
+                    parsed.getDictionary(),
+                    parsed.getCollection(),
+                    element
+                );
+            
+            if (!catalogElement.isPresent()) {
+                errors.add(ValidationError.builder()
+                    .type(ValidationError.ErrorType.UNKNOWN_DATA_ELEMENT)
+                    .message("Data element not found in catalog: " + element)
+                    .location(element)
+                    .suggestion("Check data catalog for valid elements")
+                    .build());
+            } else {
+                substitutions.put(element, catalogElement.get().getPhysicalColumn());
+            }
+        }
+        
+        // If unknown elements, return early
+        if (!errors.isEmpty()) {
+            return ValidationResult.builder()
+                .valid(false)
+                .errors(errors)
+                .substitutions(substitutions)
+                .build();
+        }
+        
+        // Step 3: Substitute placeholders with Java property names
+        String substituted = substitutionService.substitute(partialRule, 
+                                                            parsed, 
+                                                            catalogRepository);
+        
+        // Step 4: Validate Drools syntax
+        DroolsSyntaxValidator.SyntaxValidationResult syntaxResult = 
+            syntaxValidator.validate(substituted);
+        
+        if (!syntaxResult.isValid()) {
+            errors.addAll(syntaxResult.getErrors());
+        }
+        
+        // Step 5: Generate complete Drools rule
+        String completeRule = syntaxResult.isValid() 
+            ? generateCompleteDroolsRule(substituted, parsed)
+            : null;
+        
+        return ValidationResult.builder()
+            .valid(errors.isEmpty())
+            .substitutedRule(substituted)
+            .errors(errors)
+            .substitutions(substitutions)
+            .droolsRule(completeRule)
+            .build();
+    }
+    
+    private String generateCompleteDroolsRule(String whenClause, 
+                                             DroolsRuleParser.ParsedRule parsed) {
+        String className = toPascalCase(parsed.getCollection());
+        String packageName = toPackageName(parsed.getDictionary());
+        
+        return String.format(
+            "package %s;\n\n" +
+            "rule \"Generated Rule\"\n" +
+            "when\n" +
+            "    %s\n" +
+            "then\n" +
+            "    // Action to be defined\n" +
+            "end",
+            packageName,
+            whenClause
+        );
+    }
+    
+    private String toPascalCase(String input) {
+        String[] words = input.split("\\s+");
+        StringBuilder result = new StringBuilder();
+        for (String word : words) {
+            result.append(word.substring(0, 1).toUpperCase())
+                  .append(word.substring(1).toLowerCase());
+        }
+        return result.toString();
+    }
+    
+    private String toPackageName(String input) {
+        return input.toLowerCase().replaceAll("\\s+", ".");
+    }
+}
+
+// ============================================================================
+// 5. SERVICE LAYER - Substitution Service
+// ============================================================================
+
+package com.datacatalog.drools.service;
+
+import com.datacatalog.drools.model.DataCatalogElement;
+import com.datacatalog.drools.repository.DataCatalogRepository;
+import org.springframework.stereotype.Service;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+@Service
+public class DroolsRuleSubstitutionService {
+    
+    private static final Pattern ELEMENT_PATTERN = Pattern.compile("<([^>]+?)>");
+    
+    public String substitute(String partialRule, 
+                           DroolsRuleParser.ParsedRule parsed,
+                           DataCatalogRepository repository) {
+        
+        String result = partialRule;
+        String className = toPascalCase(parsed.getCollection());
+        String variableName = toCamelCase(parsed.getCollection());
+        
+        // Replace collection reference
+        result = result.replaceFirst(
+            "<" + Pattern.quote(parsed.getDictionary() + "." + parsed.getCollection()) + ">",
+            className + "(" + buildObjectPattern(parsed, repository, variableName) + ")"
+        );
+        
+        return result;
+    }
+    
+    private String buildObjectPattern(DroolsRuleParser.ParsedRule parsed,
+                                     DataCatalogRepository repository,
+                                     String varName) {
+        
+        String conditions = parsed.getRawConditions();
+        
+        // Replace each <Attribute> with variableName.attribute
+        Matcher matcher = ELEMENT_PATTERN.matcher(conditions);
+        StringBuffer sb = new StringBuffer();
+        
+        while (matcher.find()) {
+            String attributeName = matcher.group(1);
+            String javaProperty = toCamelCase(attributeName);
+            matcher.appendReplacement(sb, varName + "." + javaProperty);
+        }
+        matcher.appendTail(sb);
+        
+        return sb.toString();
+    }
+    
+    private String toCamelCase(String input) {
+        String[] words = input.split("\\s+");
+        StringBuilder result = new StringBuilder(words[0].toLowerCase());
+        for (int i = 1; i < words.length; i++) {
+            result.append(words[i].substring(0, 1).toUpperCase())
+                  .append(words[i].substring(1).toLowerCase());
+        }
+        return result.toString();
+    }
+    
+    private String toPascalCase(String input) {
+        String[] words = input.split("\\s+");
+        StringBuilder result = new StringBuilder();
+        for (String word : words) {
+            result.append(word.substring(0, 1).toUpperCase())
+                  .append(word.substring(1).toLowerCase());
+        }
+        return result.toString();
+    }
+}
+
+// ============================================================================
+// 6. SERVICE LAYER - Syntax Validator
+// ============================================================================
+
+package com.datacatalog.drools.service;
+
+import com.datacatalog.drools.model.ValidationError;
+import org.springframework.stereotype.Service;
+import lombok.Data;
+import java.util.*;
+
+@Service
+public class DroolsSyntaxValidator {
+    
+    public SyntaxValidationResult validate(String droolsExpression) {
+        SyntaxValidationResult result = new SyntaxValidationResult();
+        
+        // Check parenthesis balance
+        if (!isParenthesisBalanced(droolsExpression)) {
+            result.addError(ValidationError.builder()
+                .type(ValidationError.ErrorType.MISSING_PARENTHESIS)
+                .message("Unbalanced parentheses in expression")
+                .location(findUnbalancedParenthesis(droolsExpression))
+                .suggestion("Ensure all opening parentheses have matching closing ones")
+                .build());
+        }
+        
+        // Check for common syntax errors
+        validateOperators(droolsExpression, result);
+        
+        result.setValid(result.getErrors().isEmpty());
+        return result;
+    }
+    
+    private boolean isParenthesisBalanced(String expr) {
+        int count = 0;
+        for (char c : expr.toCharArray()) {
+            if (c == '(') count++;
+            if (c == ')') count--;
+            if (count < 0) return false;
+        }
+        return count == 0;
+    }
+    
+    private String findUnbalancedParenthesis(String expr) {
+        int count = 0;
+        for (int i = 0; i < expr.length(); i++) {
+            char c = expr.charAt(i);
+            if (c == '(') count++;
+            if (c == ')') {
+                count--;
+                if (count < 0) {
+                    return "Position " + i + ": unexpected ')'";
+                }
+            }
+        }
+        return count > 0 ? "Missing closing parenthesis" : "Unknown";
+    }
+    
+    private void validateOperators(String expr, SyntaxValidationResult result) {
+        // Check for invalid operator patterns like "= =" instead of "=="
+        if (expr.matches(".*=\\s*=[^=].*")) {
+            result.addError(ValidationError.builder()
+                .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                .message("Invalid operator: '= =' should be '=='")
+                .suggestion("Use '==' for equality comparison")
+                .build());
+        }
+    }
+    
+    @Data
+    public static class SyntaxValidationResult {
+        private boolean valid;
+        private List<ValidationError> errors = new ArrayList<>();
+        
+        public void addError(ValidationError error) {
+            errors.add(error);
+        }
+    }
+}
+
+// ============================================================================
+// 7. SERVICE LAYER - Java Class Generator
+// ============================================================================
+
+package com.datacatalog.drools.service;
+
+import com.datacatalog.drools.model.*;
+import com.datacatalog.drools.repository.DataCatalogRepository;
+import org.springframework.stereotype.Service;
+import lombok.RequiredArgsConstructor;
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
+
+@Service
+@RequiredArgsConstructor
+public class JavaClassGeneratorService {
+    
+    private final DataCatalogRepository catalogRepository;
+    
+    public JavaClassGenerationResponse generateClasses(JavaClassGenerationRequest request) 
+            throws IOException {
+        
+        List<GeneratedClass> generatedClasses = new ArrayList<>();
+        Set<String> collections = catalogRepository.getAllCollections();
+        
+        for (String collectionPath : collections) {
+            String[] parts = collectionPath.split("\\.");
+            String dictionary = parts[0];
+            String collection = parts[1];
+            
+            List<DataCatalogElement> elements = 
+                catalogRepository.findByCollection(dictionary, collection);
+            
+            GeneratedClass generated = generateClass(
+                dictionary, 
+                collection, 
+                elements, 
+                request
+            );
+            
+            generatedClasses.add(generated);
+        }
+        
+        return JavaClassGenerationResponse.builder()
+            .generatedClasses(generatedClasses)
+            .totalClassesGenerated(generatedClasses.size())
+            .outputPath(request.getOutputDirectory())
+            .build();
+    }
+    
+    private GeneratedClass generateClass(String dictionary,
+                                        String collection,
+                                        List<DataCatalogElement> elements,
+                                        JavaClassGenerationRequest request) 
+            throws IOException {
+        
+        String packageName = toPackageName(dictionary);
+        String className = toPascalCase(collection);
+        
+        StringBuilder classContent = new StringBuilder();
+        
+        // Package declaration
+        classContent.append("package ").append(packageName).append(";\n\n");
+        
+        // Imports
+        if (request.isGenerateLombok()) {
+            classContent.append("import lombok.Data;\n");
+            classContent.append("import lombok.Builder;\n");
+            classContent.append("import lombok.NoArgsConstructor;\n");
+            classContent.append("import lombok.AllArgsConstructor;\n\n");
+        }
+        
+        if (request.isGenerateJPA()) {
+            classContent.append("import javax.persistence.*;\n\n");
+        }
+        
+        // Class declaration
+        if (request.isGenerateLombok()) {
+            classContent.append("@Data\n");
+            classContent.append("@Builder\n");
+            classContent.append("@NoArgsConstructor\n");
+            classContent.append("@AllArgsConstructor\n");
+        }
+        
+        if (request.isGenerateJPA()) {
+            classContent.append("@Entity\n");
+            classContent.append("@Table(name = \"")
+                       .append(elements.get(0).getPhysicalTable())
+                       .append("\")\n");
+        }
+        
+        classContent.append("public class ").append(className).append(" {\n\n");
+        
+        // Fields
+        for (DataCatalogElement element : elements) {
+            String fieldName = toCamelCase(element.getAttribute());
+            String javaType = mapDataType(element.getDataType());
+            
+            if (request.isGenerateJPA()) {
+                classContent.append("    @Column(name = \"")
+                           .append(element.getPhysicalColumn())
+                           .append("\")\n");
+            }
+            
+            classContent.append("    private ")
+                       .append(javaType)
+                       .append(" ")
+                       .append(fieldName)
+                       .append(";\n\n");
+        }
+        
+        classContent.append("}\n");
+        
+        // Write to file
+        String filePath = writeClassToFile(
+            request.getOutputDirectory(),
+            packageName,
+            className,
+            classContent.toString()
+        );
+        
+        return GeneratedClass.builder()
+            .className(className)
+            .packageName(packageName)
+            .filePath(filePath)
+            .attributeCount(elements.size())
+            .build();
+    }
+    
+    private String writeClassToFile(String baseDir, String packageName, 
+                                   String className, String content) 
+            throws IOException {
+        
+        String packagePath = packageName.replace('.', File.separatorChar);
+        Path dirPath = Paths.get(baseDir, packagePath);
+        Files.createDirectories(dirPath);
+        
+        Path filePath = dirPath.resolve(className + ".java");
+        Files.write(filePath, content.getBytes());
+        
+        return filePath.toString();
+    }
+    
+    private String toCamelCase(String input) {
+        String[] words = input.split("\\s+");
+        StringBuilder result = new StringBuilder(words[0].toLowerCase());
+        for (int i = 1; i < words.length; i++) {
+            result.append(words[i].substring(0, 1).toUpperCase())
+                  .append(words[i].substring(1).toLowerCase());
+        }
+        return result.toString();
+    }
+    
+    private String toPascalCase(String input) {
+        String[] words = input.split("\\s+");
+        StringBuilder result = new StringBuilder();
+        for (String word : words) {
+            result.append(word.substring(0, 1).toUpperCase())
+                  .append(word.substring(1).toLowerCase());
+        }
+        return result.toString();
+    }
+    
+    private String toPackageName(String input) {
+        return input.toLowerCase().replaceAll("\\s+", ".");
+    }
+    
+    private String mapDataType(String catalogType) {
+        if (catalogType == null) return "String";
+        
+        switch (catalogType.toUpperCase()) {
+            case "VARCHAR":
+            case "CHAR":
+            case "TEXT":
+                return "String";
+            case "INTEGER":
+            case "INT":
+                return "Integer";
+            case "BIGINT":
+                return "Long";
+            case "DECIMAL":
+            case "NUMERIC":
+                return "BigDecimal";
+            case "DATE":
+                return "LocalDate";
+            case "TIMESTAMP":
+                return "LocalDateTime";
+            case "BOOLEAN":
+                return "Boolean";
+            default:
+                return "String";
+        }
+    }
+}
+
+// ============================================================================
+// 8. CONTROLLER LAYER
+// ============================================================================
+
+package com.datacatalog.drools.controller;
+
+import com.datacatalog.drools.model.*;
+import com.datacatalog.drools.service.*;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/api/v1/drools")
+@RequiredArgsConstructor
+public class DroolsRuleController {
+    
+    private final DroolsRuleValidatorService validatorService;
+    private final JavaClassGeneratorService classGeneratorService;
+    
+    /**
+     * Validates a partial Drools rule with data catalog placeholders
+     * 
+     * POST /api/v1/drools/validate
+     * 
+     * Request Body:
+     * {
+     *   "partialDroolRule": "<Deposits.Deposit Contract>:(<Contract Identifier>=='Y', <Record Type>=='XRP',<Spread Rate Percentage> is null)",
+     *   "ruleName": "RULE-001",
+     *   "ruleDescription": "Validate spread rate",
+     *   "action": "ERROR"
+     * }
+     */
+    @PostMapping("/validate")
+    public ResponseEntity<RuleValidationResponse> validateRule(
+            @RequestBody RuleValidationRequest request) {
+        
+        long startTime = System.currentTimeMillis();
+        
+        ValidationResult result = validatorService.validateAndSubstitute(
+            request.getPartialDroolRule()
+        );
+        
+        long processingTime = System.currentTimeMillis() - startTime;
+        
+        RuleValidationResponse response = RuleValidationResponse.builder()
+            .requestId(UUID.randomUUID().toString())
+            .validationResult(result)
+            .processingTimeMs(processingTime)
+            .build();
+        
+        return ResponseEntity.ok(response);
+    }
+    
+    /**
+     * Generates Java classes from data catalog
+     * 
+     * POST /api/v1/drools/generate-classes
+     * 
+     * Request Body:
+     * {
+     *   "outputDirectory": "/path/to/output",
+     *   "generateLombok": true,
+     *   "generateJPA": true
+     * }
+     */
+    @PostMapping("/generate-classes")
+    public ResponseEntity<JavaClassGenerationResponse> generateClasses(
+            @RequestBody JavaClassGenerationRequest request) {
+        
+        try {
+            JavaClassGenerationResponse response = 
+                classGeneratorService.generateClasses(request);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+}
+
+// ============================================================================
+// 9. CONFIGURATION
+// ============================================================================
+
+package com.datacatalog.drools.config;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class ApplicationConfig {
+    
+    @Bean
+    public ObjectMapper objectMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.enable(SerializationFeature.INDENT_OUTPUT);
+        return mapper;
+    }
+}
+
+// ============================================================================
+// 10. SAMPLE DATA CATALOG JSON (data-catalog.json)
+// ============================================================================
+
+/*
+[
+  {
+    "dictionary": "Deposits",
+    "collection": "Deposit Contract",
+    "attribute": "Contract Identifier",
+    "physicalTable": "DEPOSIT_CONTRACT",
+    "physicalColumn": "CONTRACT_ID",
+    "dataType": "VARCHAR",
+    "description": "Unique contract identifier"
+  },
+  {
+    "dictionary": "Deposits",
+    "collection": "Deposit Contract",
+    "attribute": "Record Type",
+    "physicalTable": "DEPOSIT_CONTRACT",
+    "physicalColumn": "RECORD_TYPE",
+    "dataType": "VARCHAR",
+    "description": "Type of deposit record"
+  },
+  {
+    "dictionary": "Deposits",
+    "collection": "Deposit Contract",
+    "attribute": "Spread Rate Percentage",
+    "physicalTable": "DEPOSIT_CONTRACT",
+    "physicalColumn": "SPREAD_RATE_PCT",
+    "dataType": "DECIMAL",
+    "description": "Spread rate as percentage"
+  },
+  {
+    "dictionary": "Deposits",
+    "collection": "Deposit Contract",
+    "attribute": "Maturity Date",
+    "physicalTable": "DEPOSIT_CONTRACT",
+    "physicalColumn": "MATURITY_DT",
+    "dataType": "DATE",
+    "description": "Contract maturity date"
+  }
+]
+*/
+
+// ============================================================================
+// 11. APPLICATION PROPERTIES (application.yml)
+// ============================================================================
+
+/*
+server:
+  port: 8080
+
+spring:
+  application:
+    name: drools-data-catalog-service
+
+logging:
+  level:
+    com.datacatalog.drools: DEBUG
+*/
+
+// ============================================================================
+// 12. MAVEN DEPENDENCIES (pom.xml excerpt)
+// ============================================================================
+
+/*
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    
+    <dependency>
+        <groupId>org.projectlombok</groupId>
+        <artifactId>lombok</artifactId>
+        <scope>provided</scope>
+    </dependency>
+    
+    <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+    </dependency>
+    
+    <dependency>
+        <groupId>org.drools</groupId>
+        <artifactId>drools-core</artifactId>
+        <version>8.44.0.Final</version>
+    </dependency>
+</dependencies>
+*/
