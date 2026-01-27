@@ -1,0 +1,1508 @@
+# Enterprise Rule Conversion Framework - Architecture Design
+
+## 1. High-Level Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        APPLICATION LAYER                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
+│  │   CLI/API    │  │  Batch       │  │  Recovery    │          │
+│  │  Interface   │  │  Processor   │  │  Manager     │          │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘          │
+└─────────┼──────────────────┼──────────────────┼─────────────────┘
+          │                  │                  │
+┌─────────┼──────────────────┼──────────────────┼─────────────────┐
+│         │        ORCHESTRATION LAYER          │                 │
+│  ┌──────▼──────────────────▼──────────────────▼─────────┐       │
+│  │          RuleConversionOrchestrator                   │       │
+│  │  - Manages end-to-end conversion pipeline            │       │
+│  │  - Coordinates stage execution                       │       │
+│  │  - Handles checkpointing & recovery                  │       │
+│  └───────────────────────────┬───────────────────────────┘       │
+└──────────────────────────────┼──────────────────────────────────┘
+                               │
+┌──────────────────────────────┼──────────────────────────────────┐
+│         CONVERSION STAGE LAYER (Strategy Pattern)                │
+│  ┌─────────────────────┐    ┌─────────────────────┐            │
+│  │ BusinessToLogical   │    │ LogicalToTechnical  │            │
+│  │ ConversionStage     │    │ ConversionStage     │            │
+│  └──────────┬──────────┘    └──────────┬──────────┘            │
+└─────────────┼──────────────────────────┼─────────────────────────┘
+              │                          │
+┌─────────────┼──────────────────────────┼─────────────────────────┐
+│         CORE SERVICE LAYER              │                         │
+│  ┌──────────▼──────────┐  ┌─────────────▼────────┐              │
+│  │  LLMService         │  │ TemplateEngine       │              │
+│  │  - Session Mgmt     │  │ - Placeholder Fill   │              │
+│  │  - Retry Logic      │  │ - Mapping Resolution │              │
+│  │  - Rate Limiting    │  └──────────────────────┘              │
+│  └─────────────────────┘                                         │
+│  ┌─────────────────────┐  ┌──────────────────────┐              │
+│  │ PromptManager       │  │ ValidationService    │              │
+│  │ - Template Loading  │  │ - Structure Check    │              │
+│  │ - Format Selection  │  │ - Completeness       │              │
+│  └─────────────────────┘  └──────────────────────┘              │
+│  ┌─────────────────────┐  ┌──────────────────────┐              │
+│  │ StateManager        │  │ RuleGrouper          │              │
+│  │ - Checkpointing     │  │ - Grouping Strategy  │              │
+│  │ - Progress Tracking │  └──────────────────────┘              │
+│  └─────────────────────┘                                         │
+└──────────────────────────────────────────────────────────────────┘
+                               │
+┌──────────────────────────────┼──────────────────────────────────┐
+│         INFRASTRUCTURE LAYER  │                                  │
+│  ┌──────────────────┐  ┌─────▼──────────┐  ┌────────────────┐  │
+│  │ ExcelReader      │  │ OutputWriter   │  │ ConfigLoader   │  │
+│  └──────────────────┘  │ - Success      │  └────────────────┘  │
+│  ┌──────────────────┐  │ - Failure      │  ┌────────────────┐  │
+│  │ LoggerFactory    │  │ - Validation   │  │ MappingLoader  │  │
+│  └──────────────────┘  └────────────────┘  └────────────────┘  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+## 2. Module/Package Structure
+
+```
+rule_conversion_framework/
+├── __init__.py
+├── main.py                          # Entry point
+│
+├── config/
+│   ├── __init__.py
+│   ├── settings.py                  # Configuration models (Pydantic)
+│   ├── config.yaml                  # Main configuration
+│   └── prompts/
+│       ├── business_to_logical/
+│       │   ├── conformity_sql.yaml
+│       │   ├── validity_sql.yaml
+│       │   └── conformity_drools.yaml
+│       └── logical_to_technical/
+│           ├── sql_to_spark.yaml
+│           └── sql_to_presto.yaml
+│
+├── domain/
+│   ├── __init__.py
+│   ├── models.py                    # Rule, ConversionResult, CheckpointState
+│   ├── enums.py                     # ConversionStage, OutputFormat, Status
+│   └── exceptions.py                # Custom exceptions
+│
+├── interfaces/
+│   ├── __init__.py
+│   ├── conversion_stage.py          # Abstract ConversionStage
+│   ├── llm_provider.py              # Abstract LLMProvider
+│   ├── storage.py                   # Abstract RuleStorage, StateStorage
+│   ├── validator.py                 # Abstract Validator
+│   └── grouping_strategy.py         # Abstract GroupingStrategy
+│
+├── services/
+│   ├── __init__.py
+│   ├── llm/
+│   │   ├── __init__.py
+│   │   ├── llm_service.py           # LLM orchestration
+│   │   ├── session_manager.py       # Session lifecycle
+│   │   ├── retry_handler.py         # Exponential backoff
+│   │   └── providers/
+│   │       ├── __init__.py
+│   │       ├── anthropic_provider.py
+│   │       └── openai_provider.py
+│   │
+│   ├── prompt/
+│   │   ├── __init__.py
+│   │   ├── prompt_manager.py        # Load & select prompts
+│   │   └── prompt_renderer.py       # Template rendering (Jinja2)
+│   │
+│   ├── template/
+│   │   ├── __init__.py
+│   │   ├── template_engine.py       # Placeholder filling
+│   │   └── mapping_resolver.py      # Mapping data resolution
+│   │
+│   ├── validation/
+│   │   ├── __init__.py
+│   │   ├── validation_service.py    # Orchestrates validators
+│   │   ├── structure_validator.py   # JSON/SQL structure
+│   │   ├── completeness_validator.py # Placeholder check
+│   │   └── mapping_validator.py     # Mapping coverage
+│   │
+│   └── grouping/
+│       ├── __init__.py
+│       ├── rule_grouper.py
+│       └── strategies/
+│           ├── __init__.py
+│           ├── by_name.py
+│           ├── by_subdimension.py
+│           └── no_grouping.py
+│
+├── stages/
+│   ├── __init__.py
+│   ├── business_to_logical.py       # Stage 1 implementation
+│   └── logical_to_technical.py      # Stage 2 implementation
+│
+├── orchestration/
+│   ├── __init__.py
+│   ├── orchestrator.py              # Main conversion orchestrator
+│   └── state_manager.py             # Checkpoint & recovery
+│
+├── infrastructure/
+│   ├── __init__.py
+│   ├── io/
+│   │   ├── __init__.py
+│   │   ├── excel_reader.py
+│   │   ├── output_writer.py
+│   │   └── mapping_loader.py
+│   │
+│   ├── logging/
+│   │   ├── __init__.py
+│   │   ├── logger_factory.py
+│   │   └── structured_logger.py
+│   │
+│   └── storage/
+│       ├── __init__.py
+│       ├── file_storage.py          # JSON-based state storage
+│       └── rule_repository.py       # Rule CRUD operations
+│
+├── cli/
+│   ├── __init__.py
+│   └── commands.py                  # CLI interface (Click/Typer)
+│
+└── tests/
+    ├── unit/
+    ├── integration/
+    └── fixtures/
+```
+
+## 3. Core Abstractions & Interfaces
+
+```python
+# domain/models.py
+from dataclasses import dataclass, field
+from typing import Dict, Any, Optional, List
+from datetime import datetime
+from enum import Enum
+
+@dataclass
+class Rule:
+    """Core domain model for a rule"""
+    rule_name: str
+    subdimension: str
+    rule_text: str
+    applicable_versions: str
+    valid_values: Optional[str] = None
+    mand_ind: Optional[str] = None
+    mand_cond: Optional[str] = None
+    phy_data_type: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def get_subdimension_fields(self) -> Dict[str, Any]:
+        """Extract relevant fields based on subdimension"""
+        field_map = {
+            'conformity': {'mand_cond': self.mand_cond, 'mand_ind': self.mand_ind},
+            'validity': {'valid_values': self.valid_values, 'phy_data_type': self.phy_data_type}
+        }
+        return field_map.get(self.subdimension, {})
+
+@dataclass
+class ConversionContext:
+    """Context passed through conversion pipeline"""
+    rule: Rule
+    stage: 'ConversionStage'
+    output_format: str
+    mapping_data: Optional[Dict[str, Any]] = None
+    use_llm_for_placeholders: bool = False
+    intermediate_results: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class ConversionResult:
+    """Result of a conversion operation"""
+    rule_name: str
+    stage: str
+    success: bool
+    output: Optional[str] = None
+    error: Optional[str] = None
+    retry_count: int = 0
+    timestamp: datetime = field(default_factory=datetime.now)
+    session_id: Optional[str] = None
+    validation_errors: List[str] = field(default_factory=list)
+
+@dataclass
+class CheckpointState:
+    """State for recovery"""
+    batch_id: str
+    completed_rules: List[str]
+    failed_rules: List[str]
+    current_stage: str
+    session_id: Optional[str]
+    last_updated: datetime
+    total_rules: int
+```
+
+```python
+# interfaces/conversion_stage.py
+from abc import ABC, abstractmethod
+from typing import List
+from domain.models import Rule, ConversionResult, ConversionContext
+
+class ConversionStage(ABC):
+    """Abstract base class for conversion stages"""
+    
+    @abstractmethod
+    def convert(self, context: ConversionContext) -> ConversionResult:
+        """Convert a single rule"""
+        pass
+    
+    @abstractmethod
+    def get_stage_name(self) -> str:
+        """Return stage identifier"""
+        pass
+    
+    def pre_convert(self, context: ConversionContext) -> None:
+        """Hook for pre-conversion logic"""
+        pass
+    
+    def post_convert(self, result: ConversionResult) -> ConversionResult:
+        """Hook for post-conversion logic"""
+        return result
+```
+
+```python
+# interfaces/llm_provider.py
+from abc import ABC, abstractmethod
+from typing import Dict, Any, Optional
+
+class LLMProvider(ABC):
+    """Abstract interface for LLM providers"""
+    
+    @abstractmethod
+    def call(self, prompt: str, **kwargs) -> str:
+        """Make a single LLM call"""
+        pass
+    
+    @abstractmethod
+    def create_session(self) -> str:
+        """Create a new session and return session ID"""
+        pass
+    
+    @abstractmethod
+    def close_session(self, session_id: str) -> None:
+        """Close an active session"""
+        pass
+    
+    @abstractmethod
+    def is_rate_limit_error(self, error: Exception) -> bool:
+        """Check if error is rate limit (429)"""
+        pass
+    
+    @abstractmethod
+    def is_session_expired(self, error: Exception) -> bool:
+        """Check if error is session expiry (401)"""
+        pass
+```
+
+```python
+# interfaces/validator.py
+from abc import ABC, abstractmethod
+from typing import List, Tuple
+from domain.models import ConversionResult
+
+class Validator(ABC):
+    """Abstract validator interface"""
+    
+    @abstractmethod
+    def validate(self, result: ConversionResult) -> Tuple[bool, List[str]]:
+        """
+        Validate conversion result
+        Returns: (is_valid, list_of_errors)
+        """
+        pass
+    
+    @abstractmethod
+    def get_validator_name(self) -> str:
+        """Return validator identifier"""
+        pass
+```
+
+```python
+# interfaces/grouping_strategy.py
+from abc import ABC, abstractmethod
+from typing import List, Dict
+from domain.models import Rule
+
+class GroupingStrategy(ABC):
+    """Abstract strategy for grouping rules"""
+    
+    @abstractmethod
+    def group(self, rules: List[Rule]) -> Dict[str, List[Rule]]:
+        """
+        Group rules into batches
+        Returns: Dict mapping group_id -> list of rules
+        """
+        pass
+```
+
+```python
+# interfaces/storage.py
+from abc import ABC, abstractmethod
+from typing import List, Optional
+from domain.models import Rule, ConversionResult, CheckpointState
+
+class RuleStorage(ABC):
+    """Abstract storage for rules"""
+    
+    @abstractmethod
+    def read_rules(self, source: str) -> List[Rule]:
+        """Read rules from source"""
+        pass
+    
+    @abstractmethod
+    def write_result(self, result: ConversionResult, category: str) -> None:
+        """Write conversion result (success/failure/validation)"""
+        pass
+
+class StateStorage(ABC):
+    """Abstract storage for execution state"""
+    
+    @abstractmethod
+    def save_checkpoint(self, state: CheckpointState) -> None:
+        """Save checkpoint state"""
+        pass
+    
+    @abstractmethod
+    def load_checkpoint(self, batch_id: str) -> Optional[CheckpointState]:
+        """Load checkpoint state"""
+        pass
+    
+    @abstractmethod
+    def clear_checkpoint(self, batch_id: str) -> None:
+        """Clear checkpoint after successful completion"""
+        pass
+```
+
+## 4. Class Responsibilities
+
+### Core Service Classes
+
+```python
+# services/llm/llm_service.py
+class LLMService:
+    """
+    Orchestrates LLM interactions with resilience
+    
+    Responsibilities:
+    - Session lifecycle management (max 100 calls per session)
+    - Retry logic with exponential backoff for 429
+    - Automatic session renewal on 401
+    - Call counting and session rotation
+    - Error propagation with context
+    """
+    
+    def __init__(
+        self,
+        provider: LLMProvider,
+        max_calls_per_session: int = 95,  # Buffer below 100
+        max_retries: int = 5,
+        base_delay: float = 1.0
+    ):
+        self.provider = provider
+        self.session_manager = SessionManager(provider, max_calls_per_session)
+        self.retry_handler = RetryHandler(max_retries, base_delay)
+    
+    def convert_with_llm(
+        self,
+        prompt: str,
+        rule_name: str,
+        **kwargs
+    ) -> str:
+        """Execute LLM call with full resilience"""
+        pass
+```
+
+```python
+# services/llm/session_manager.py
+class SessionManager:
+    """
+    Manages LLM session lifecycle
+    
+    Responsibilities:
+    - Create sessions on demand
+    - Track calls per session
+    - Rotate session when limit reached
+    - Handle session expiry (401)
+    """
+    
+    def __init__(self, provider: LLMProvider, max_calls: int):
+        self.provider = provider
+        self.max_calls = max_calls
+        self.current_session_id: Optional[str] = None
+        self.call_count: int = 0
+    
+    def get_active_session(self) -> str:
+        """Get or create active session"""
+        if self.needs_rotation():
+            self.rotate_session()
+        return self.current_session_id
+    
+    def needs_rotation(self) -> bool:
+        """Check if session needs rotation"""
+        return (
+            self.current_session_id is None or
+            self.call_count >= self.max_calls
+        )
+```
+
+```python
+# services/llm/retry_handler.py
+import time
+from typing import Callable, TypeVar
+
+T = TypeVar('T')
+
+class RetryHandler:
+    """
+    Exponential backoff retry logic
+    
+    Responsibilities:
+    - Retry on rate limits (429)
+    - Exponential backoff: 1s, 2s, 4s, 8s, 16s
+    - Jitter to avoid thundering herd
+    """
+    
+    def __init__(self, max_retries: int, base_delay: float):
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+    
+    def execute_with_retry(
+        self,
+        func: Callable[[], T],
+        is_retriable: Callable[[Exception], bool],
+        rule_name: str
+    ) -> T:
+        """Execute function with retry logic"""
+        pass
+```
+
+```python
+# services/prompt/prompt_manager.py
+class PromptManager:
+    """
+    Manages prompt templates
+    
+    Responsibilities:
+    - Load prompts from YAML/JSON
+    - Select prompt by: subdimension, output_format, stage
+    - Cache loaded prompts
+    - Validate prompt structure
+    """
+    
+    def __init__(self, prompt_dir: str):
+        self.prompt_dir = prompt_dir
+        self.prompt_cache: Dict[str, PromptTemplate] = {}
+    
+    def get_prompt(
+        self,
+        stage: str,
+        subdimension: str,
+        output_format: str
+    ) -> PromptTemplate:
+        """Load and return appropriate prompt"""
+        pass
+```
+
+```python
+# services/template/template_engine.py
+class TemplateEngine:
+    """
+    Fills SQL/Spark template placeholders
+    
+    Responsibilities:
+    - Load templates by output format
+    - Fill placeholders deterministically (code)
+    - OR fill via LLM (if flag enabled)
+    - Resolve mapping data
+    """
+    
+    def __init__(
+        self,
+        mapping_resolver: MappingResolver,
+        llm_service: Optional[LLMService] = None
+    ):
+        self.mapping_resolver = mapping_resolver
+        self.llm_service = llm_service
+    
+    def fill_template(
+        self,
+        template: str,
+        rule: Rule,
+        use_llm: bool = False
+    ) -> str:
+        """Fill template placeholders"""
+        pass
+```
+
+```python
+# services/validation/validation_service.py
+class ValidationService:
+    """
+    Orchestrates post-conversion validation
+    
+    Responsibilities:
+    - Run all registered validators
+    - Aggregate validation results
+    - Move files to appropriate directories
+    """
+    
+    def __init__(self, validators: List[Validator]):
+        self.validators = validators
+    
+    def validate(self, result: ConversionResult) -> ConversionResult:
+        """Run all validations and update result"""
+        all_errors = []
+        for validator in self.validators:
+            is_valid, errors = validator.validate(result)
+            if not is_valid:
+                all_errors.extend(errors)
+        
+        result.validation_errors = all_errors
+        result.success = len(all_errors) == 0
+        return result
+```
+
+```python
+# orchestration/state_manager.py
+class StateManager:
+    """
+    Manages execution state and checkpointing
+    
+    Responsibilities:
+    - Save checkpoint after each rule
+    - Track completed/failed rules
+    - Enable resume from last checkpoint
+    - Prevent duplicate processing
+    """
+    
+    def __init__(self, storage: StateStorage):
+        self.storage = storage
+        self.current_state: Optional[CheckpointState] = None
+    
+    def initialize(self, batch_id: str, total_rules: int) -> None:
+        """Initialize or resume state"""
+        pass
+    
+    def mark_completed(self, rule_name: str) -> None:
+        """Mark rule as successfully processed"""
+        pass
+    
+    def is_already_processed(self, rule_name: str) -> bool:
+        """Check if rule was already processed"""
+        pass
+```
+
+```python
+# orchestration/orchestrator.py
+class RuleConversionOrchestrator:
+    """
+    Main orchestration engine
+    
+    Responsibilities:
+    - Coordinate end-to-end pipeline
+    - Execute stages in sequence
+    - Handle errors and recovery
+    - Manage state across executions
+    """
+    
+    def __init__(
+        self,
+        stages: List[ConversionStage],
+        state_manager: StateManager,
+        validation_service: ValidationService,
+        output_writer: OutputWriter,
+        logger: StructuredLogger
+    ):
+        self.stages = stages
+        self.state_manager = state_manager
+        self.validation_service = validation_service
+        self.output_writer = output_writer
+        self.logger = logger
+    
+    def process_rules(
+        self,
+        rules: List[Rule],
+        batch_id: str,
+        resume: bool = False
+    ) -> Dict[str, Any]:
+        """Execute full conversion pipeline"""
+        pass
+```
+
+## 5. Configuration Model
+
+```yaml
+# config/config.yaml
+application:
+  name: "rule-conversion-framework"
+  version: "1.0.0"
+  batch_size: 50
+  enable_debug_logging: false
+
+llm:
+  provider: "anthropic"  # anthropic, openai
+  max_calls_per_session: 95
+  max_retries: 5
+  base_retry_delay: 1.0
+  timeout: 30
+  
+  anthropic:
+    api_key_env: "ANTHROPIC_API_KEY"
+    model: "claude-sonnet-4-20250514"
+    
+  openai:
+    api_key_env: "OPENAI_API_KEY"
+    model: "gpt-4"
+
+conversion:
+  stages:
+    - name: "business_to_logical"
+      enabled: true
+    - name: "logical_to_technical"
+      enabled: true
+  
+  output_formats:
+    - sql
+    - spark_sql
+    - drools
+  
+  default_output_format: "sql"
+  use_llm_for_placeholders: false
+
+grouping:
+  strategy: "by_subdimension"  # no_grouping, by_name, by_subdimension, custom
+  max_group_size: 10
+
+prompts:
+  base_dir: "./config/prompts"
+  cache_enabled: true
+
+templates:
+  base_dir: "./config/templates"
+  sql_template: "sql_template.j2"
+  spark_template: "spark_template.j2"
+
+mapping:
+  file_path: "./data/mapping.json"
+  cache_enabled: true
+
+validation:
+  enabled: true
+  validators:
+    - structure_validator
+    - completeness_validator
+    - mapping_validator
+  strict_mode: false  # Fail fast on validation errors
+
+storage:
+  input:
+    excel_path: "./data/input/rules.xlsx"
+    sheet_name: "Rules"
+  
+  output:
+    base_dir: "./data/output"
+    success_dir: "success"
+    failure_dir: "failure"
+    validation_success_dir: "success_post_validation"
+    validation_failure_dir: "failure_post_validation"
+  
+  checkpoint:
+    enabled: true
+    dir: "./data/checkpoints"
+    auto_cleanup: true
+
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "json"  # json, text
+  output:
+    - console
+    - file
+  file:
+    path: "./logs/conversion.log"
+    max_size_mb: 100
+    backup_count: 5
+```
+
+```python
+# config/settings.py
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+
+class LLMConfig(BaseModel):
+    provider: str = "anthropic"
+    max_calls_per_session: int = 95
+    max_retries: int = 5
+    base_retry_delay: float = 1.0
+    timeout: int = 30
+    anthropic: Dict[str, Any] = {}
+    openai: Dict[str, Any] = {}
+
+class ConversionConfig(BaseModel):
+    stages: List[Dict[str, Any]]
+    output_formats: List[str]
+    default_output_format: str = "sql"
+    use_llm_for_placeholders: bool = False
+
+class GroupingConfig(BaseModel):
+    strategy: str = "by_subdimension"
+    max_group_size: int = 10
+
+class StorageConfig(BaseModel):
+    input: Dict[str, str]
+    output: Dict[str, str]
+    checkpoint: Dict[str, Any]
+
+class ValidationConfig(BaseModel):
+    enabled: bool = True
+    validators: List[str]
+    strict_mode: bool = False
+
+class LoggingConfig(BaseModel):
+    level: str = "INFO"
+    format: str = "json"
+    output: List[str] = ["console", "file"]
+    file: Dict[str, Any] = {}
+
+class AppConfig(BaseModel):
+    application: Dict[str, Any]
+    llm: LLMConfig
+    conversion: ConversionConfig
+    grouping: GroupingConfig
+    prompts: Dict[str, str]
+    templates: Dict[str, str]
+    mapping: Dict[str, Any]
+    validation: ValidationConfig
+    storage: StorageConfig
+    logging: LoggingConfig
+
+def load_config(config_path: str = "config/config.yaml") -> AppConfig:
+    """Load and validate configuration"""
+    import yaml
+    with open(config_path) as f:
+        config_dict = yaml.safe_load(f)
+    return AppConfig(**config_dict)
+```
+
+## 6. Sample Prompt Configuration
+
+```yaml
+# config/prompts/business_to_logical/conformity_sql.yaml
+name: "conformity_business_to_logical_sql"
+description: "Convert conformity business rules to logical SQL rules"
+stage: "business_to_logical"
+subdimension: "conformity"
+output_format: "sql"
+
+system_prompt: |
+  You are an expert data quality architect specializing in converting business rules 
+  to executable SQL logic. Your task is to transform business-level conformity rules 
+  into precise, logical SQL expressions.
+
+user_prompt_template: |
+  Convert the following business rule to a logical SQL WHERE clause:
+  
+  **Rule Name:** {{ rule_name }}
+  **Subdimension:** {{ subdimension }}
+  **Business Rule:** {{ rule_text }}
+  
+  **Context:**
+  - Applicable Versions: {{ applicable_versions }}
+  - Mandatory Indicator: {{ mand_ind }}
+  - Mandatory Condition: {{ mand_cond }}
+  
+  **Requirements:**
+  1. Generate a SQL WHERE clause that validates the conformity rule
+  2. Use standard SQL syntax compatible with ANSI SQL
+  3. Include comments explaining the logic
+  4. Handle NULL values appropriately
+  5. Consider the mandatory condition: {{ mand_cond }}
+  
+  **Output Format:**
+  Return ONLY valid SQL, no explanations. Format:
+  ```sql
+  -- Rule: {{ rule_name }}
+  -- Business Logic: [brief explanation]
+  WHERE <your_condition>
+  ```
+
+response_format:
+  type: "text"
+  extract_pattern: "```sql\\n(.*?)\\n```"
+  validation:
+    - must_contain: "WHERE"
+    - must_not_contain: ["TODO", "PLACEHOLDER"]
+
+examples:
+  - input:
+      rule_name: "email_format_check"
+      rule_text: "Email must be in valid format"
+      mand_cond: "customer_type = 'RETAIL'"
+    expected_output: |
+      -- Rule: email_format_check
+      -- Business Logic: Validate email format for retail customers
+      WHERE (customer_type != 'RETAIL' OR email REGEXP '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}$')
+
+metadata:
+  version: "1.0"
+  author: "system"
+  last_updated: "2026-01-27"
+```
+
+```yaml
+# config/prompts/logical_to_technical/sql_to_spark.yaml
+name: "sql_to_spark_translation"
+description: "Convert SQL logical rules to PySpark DataFrame operations"
+stage: "logical_to_technical"
+subdimension: "all"
+output_format: "spark_sql"
+
+system_prompt: |
+  You are a Spark SQL expert. Convert standard SQL expressions to PySpark 
+  DataFrame API calls. Optimize for performance and readability.
+
+user_prompt_template: |
+  Convert this SQL WHERE clause to PySpark DataFrame filter:
+  
+  **Logical SQL:**
+  ```sql
+  {{ logical_rule }}
+  ```
+  
+  **Available DataFrame:** df
+  
+  **Mapping Data:**
+  {% for key, value in mapping_data.items() %}
+  - {{ key }}: {{ value }}
+  {% endfor %}
+  
+  **Output Format:**
+  Return PySpark code using DataFrame API. Use F.col() for columns.
+  
+  Example:
+  ```python
+  from pyspark.sql import functions as F
+  filtered_df = df.filter(
+      (F.col("customer_type") != "RETAIL") | 
+      (F.col("email").rlike("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}$"))
+  )
+  ```
+
+response_format:
+  type: "code"
+  language: "python"
+  extract_pattern: "```python\\n(.*?)\\n```"
+
+metadata:
+  version: "1.0"
+  last_updated: "2026-01-27"
+```
+
+## 7. Execution Flow
+
+### High-Level Flow
+
+```
+1. INITIALIZATION
+   ├─ Load configuration (config.yaml)
+   ├─ Initialize logging
+   ├─ Setup LLM provider and session
+   ├─ Load prompts and templates
+   └─ Load mapping data
+
+2. RULE LOADING
+   ├─ Read rules from Excel
+   ├─ Parse into Rule domain objects
+   ├─ Apply filters (if specified)
+   └─ Group rules (per strategy)
+
+3. STATE MANAGEMENT
+   ├─ Check for existing checkpoint
+   ├─ If resume=true: Load checkpoint state
+   ├─ Filter out already-processed rules
+   └─ Initialize new checkpoint if needed
+
+4. CONVERSION PIPELINE (per rule)
+   ├─ STAGE 1: Business → Logical
+   │  ├─ Load prompt template
+   │  ├─ Render prompt with rule data
+   │  ├─ Call LLM with retry/session mgmt
+   │  ├─ Parse LLM response
+   │  ├─ Store intermediate result
+   │  └─ Update checkpoint
+   │
+   └─ STAGE 2: Logical → Technical
+      ├─ Load template (SQL/Spark)
+      ├─ If use_llm_for_placeholders:
+      │  ├─ Call LLM for placeholder values
+      │  └─ Fill template with LLM output
+      ├─ Else:
+      │  ├─ Resolve placeholders via mapping
+      │  └─ Fill template deterministically
+      ├─ Store final result
+      └─ Update checkpoint
+
+5. VALIDATION PHASE
+   ├─ For each successful result:
+   │  ├─ Run structure validator
+   │  ├─ Run completeness validator
+   │  ├─ Run mapping validator
+   │  └─ Aggregate validation errors
+   │
+   ├─ Move to success_post_validation/ if valid
+   └─ Move to failure_post_validation/ if invalid
+
+6. ERROR HANDLING
+   ├─ On 429 (rate limit):
+   │  └─ Exponential backoff retry
+   │
+   ├─ On 401 (session expired):
+   │  ├─ Rotate session
+   │  └─ Retry current rule
+   │
+   ├─ On session limit (100 calls):
+   │  ├─ Close current session
+   │  ├─ Create new session
+   │  └─ Continue processing
+   │
+   └─ On unrecoverable error:
+      ├─ Log error with context
+      ├─ Save to failure directory
+      ├─ Update checkpoint
+      └─ Continue with next rule
+
+7. COMPLETION
+   ├─ Generate summary report
+   ├─ Clear checkpoint if all successful
+   └─ Close LLM sessions
+```
+
+### Detailed Stage Execution
+
+```python
+# Pseudocode for orchestrator.process_rules()
+
+def process_rules(self, rules: List[Rule], batch_id: str, resume: bool) -> Dict:
+    # Step 1: Initialize state
+    self.state_manager.initialize(batch_id, len(rules), resume)
+    
+    # Step 2: Filter already-processed rules
+    pending_rules = [
+        r for r in rules 
+        if not self.state_manager.is_already_processed(r.rule_name)
+    ]
+    
+    # Step 3: Process each rule through stages
+    summary = {"success": 0, "failed": 0, "validation_failed": 0}
+    
+    for rule in pending_rules:
+        try:
+            # Build conversion context
+            context = ConversionContext(
+                rule=rule,
+                stage=None,  # Set per stage
+                output_format=self.config.conversion.default_output_format,
+                mapping_data=self.mapping_loader.load(),
+                use_llm_for_placeholders=self.config.conversion.use_llm_for_placeholders
+            )
+            
+            # Execute stages sequentially
+            for stage in self.stages:
+                context.stage = stage.get_stage_name()
+                
+                self.logger.info(
+                    "Processing rule",
+                    extra={
+                        "rule_name": rule.rule_name,
+                        "stage": context.stage,
+                        "batch_id": batch_id
+                    }
+                )
+                
+                # Pre-conversion hook
+                stage.pre_convert(context)
+                
+                # Main conversion
+                result = stage.convert(context)
+                
+                # Post-conversion hook
+                result = stage.post_convert(result)
+                
+                # Store intermediate result
+                context.intermediate_results[context.stage] = result.output
+                
+                # Handle failure
+                if not result.success:
+                    self.output_writer.write(result, "failure")
+                    self.state_manager.mark_failed(rule.rule_name)
+                    summary["failed"] += 1
+                    break
+                
+                # Update checkpoint after each stage
+                self.state_manager.save_checkpoint()
+            
+            else:  # All stages succeeded
+                # Run validation
+                final_result = self.validation_service.validate(result)
+                
+                if final_result.success:
+                    self.output_writer.write(final_result, "success_post_validation")
+                    summary["success"] += 1
+                else:
+                    self.output_writer.write(final_result, "failure_post_validation")
+                    summary["validation_failed"] += 1
+                
+                # Mark as completed
+                self.state_manager.mark_completed(rule.rule_name)
+        
+        except Exception as e:
+            self.logger.error(
+                "Unrecoverable error",
+                extra={
+                    "rule_name": rule.rule_name,
+                    "error": str(e),
+                    "batch_id": batch_id
+                },
+                exc_info=True
+            )
+            summary["failed"] += 1
+    
+    # Step 4: Cleanup
+    if summary["failed"] == 0:
+        self.state_manager.clear_checkpoint(batch_id)
+    
+    return summary
+```
+
+## 8. Error Handling & Retry Strategy
+
+### Retry Decision Tree
+
+```
+LLM Call Error
+    │
+    ├─ 429 (Rate Limit)
+    │   └─ Retry with exponential backoff
+    │       ├─ Attempt 1: wait 1s
+    │       ├─ Attempt 2: wait 2s
+    │       ├─ Attempt 3: wait 4s
+    │       ├─ Attempt 4: wait 8s
+    │       ├─ Attempt 5: wait 16s
+    │       └─ If still failing: Mark as failed, continue
+    │
+    ├─ 401 (Session Expired)
+    │   └─ Rotate session immediately
+    │       └─ Retry same rule (no backoff needed)
+    │
+    ├─ Session Limit Reached (100 calls)
+    │   └─ Rotate session proactively
+    │       └─ Continue processing
+    │
+    ├─ Network/Timeout Error
+    │   └─ Retry with backoff (max 3 attempts)
+    │
+    └─ Validation Error / Parse Error
+        └─ No retry, mark as failed with context
+```
+
+### Implementation
+
+```python
+# services/llm/llm_service.py
+class LLMService:
+    def convert_with_llm(self, prompt: str, rule_name: str, **kwargs) -> str:
+        def _execute_call():
+            # Check if session rotation needed
+            session_id = self.session_manager.get_active_session()
+            
+            try:
+                # Actual LLM call
+                response = self.provider.call(prompt, **kwargs)
+                
+                # Increment call count
+                self.session_manager.increment_call_count()
+                
+                return response
+            
+            except Exception as e:
+                # Session expired - rotate and retry immediately
+                if self.provider.is_session_expired(e):
+                    self.logger.warning(
+                        "Session expired, rotating",
+                        extra={"rule_name": rule_name, "session_id": session_id}
+                    )
+                    self.session_manager.rotate_session()
+                    raise  # Will be retried
+                
+                # Rate limit - will be handled by retry handler
+                elif self.provider.is_rate_limit_error(e):
+                    self.logger.warning(
+                        "Rate limit hit",
+                        extra={"rule_name": rule_name}
+                    )
+                    raise
+                
+                # Other errors
+                else:
+                    self.logger.error(
+                        "LLM call failed",
+                        extra={"rule_name": rule_name, "error": str(e)}
+                    )
+                    raise
+        
+        # Execute with retry logic
+        return self.retry_handler.execute_with_retry(
+            func=_execute_call,
+            is_retriable=lambda e: (
+                self.provider.is_rate_limit_error(e) or
+                self.provider.is_session_expired(e)
+            ),
+            rule_name=rule_name
+        )
+```
+
+```python
+# services/llm/retry_handler.py
+import time
+import random
+
+class RetryHandler:
+    def execute_with_retry(
+        self,
+        func: Callable[[], T],
+        is_retriable: Callable[[Exception], bool],
+        rule_name: str
+    ) -> T:
+        last_exception = None
+        
+        for attempt in range(self.max_retries + 1):
+            try:
+                return func()
+            
+            except Exception as e:
+                last_exception = e
+                
+                # Check if we should retry
+                if not is_retriable(e) or attempt == self.max_retries:
+                    raise
+                
+                # Calculate delay with jitter
+                delay = self.base_delay * (2 ** attempt)
+                jitter = random.uniform(0, 0.1 * delay)
+                total_delay = delay + jitter
+                
+                self.logger.info(
+                    "Retrying after error",
+                    extra={
+                        "rule_name": rule_name,
+                        "attempt": attempt + 1,
+                        "max_retries": self.max_retries,
+                        "delay_seconds": round(total_delay, 2),
+                        "error": str(e)
+                    }
+                )
+                
+                time.sleep(total_delay)
+        
+        # Should not reach here
+        raise last_exception
+```
+
+## 9. Sample Logging Output
+
+```json
+{
+  "timestamp": "2026-01-27T10:15:32.123Z",
+  "level": "INFO",
+  "message": "Starting rule conversion",
+  "batch_id": "batch_20260127_101532",
+  "total_rules": 150,
+  "resume": false,
+  "config": {
+    "output_format": "spark_sql",
+    "grouping_strategy": "by_subdimension"
+  }
+}
+
+{
+  "timestamp": "2026-01-27T10:15:33.456Z",
+  "level": "INFO",
+  "message": "Processing rule",
+  "rule_name": "email_format_check",
+  "subdimension": "conformity",
+  "stage": "business_to_logical",
+  "batch_id": "batch_20260127_101532",
+  "session_id": "session_abc123",
+  "group_id": "conformity_group_1"
+}
+
+{
+  "timestamp": "2026-01-27T10:15:35.789Z",
+  "level": "DEBUG",
+  "message": "LLM prompt generated",
+  "rule_name": "email_format_check",
+  "prompt_template": "conformity_business_to_logical_sql",
+  "prompt_length": 512,
+  "batch_id": "batch_20260127_101532"
+}
+
+{
+  "timestamp": "2026-01-27T10:15:38.234Z",
+  "level": "WARNING",
+  "message": "Rate limit hit",
+  "rule_name": "email_format_check",
+  "session_id": "session_abc123",
+  "attempt": 1,
+  "max_retries": 5,
+  "delay_seconds": 1.05,
+  "batch_id": "batch_20260127_101532"
+}
+
+{
+  "timestamp": "2026-01-27T10:15:40.567Z",
+  "level": "INFO",
+  "message": "LLM call successful",
+  "rule_name": "email_format_check",
+  "session_id": "session_abc123",
+  "session_call_count": 23,
+  "retry_count": 1,
+  "response_length": 342,
+  "batch_id": "batch_20260127_101532"
+}
+
+{
+  "timestamp": "2026-01-27T10:15:41.123Z",
+  "level": "INFO",
+  "message": "Stage completed",
+  "rule_name": "email_format_check",
+  "stage": "business_to_logical",
+  "success": true,
+  "output_length": 256,
+  "batch_id": "batch_20260127_101532"
+}
+
+{
+  "timestamp": "2026-01-27T10:15:41.345Z",
+  "level": "INFO",
+  "message": "Checkpoint saved",
+  "batch_id": "batch_20260127_101532",
+  "completed_rules": 45,
+  "failed_rules": 2,
+  "remaining_rules": 103
+}
+
+{
+  "timestamp": "2026-01-27T10:16:12.678Z",
+  "level": "WARNING",
+  "message": "Session expired, rotating",
+  "rule_name": "data_type_validation",
+  "session_id": "session_abc123",
+  "session_call_count": 97,
+  "batch_id": "batch_20260127_101532"
+}
+
+{
+  "timestamp": "2026-01-27T10:16:13.901Z",
+  "level": "INFO",
+  "message": "New session created",
+  "session_id": "session_def456",
+  "previous_session_id": "session_abc123",
+  "batch_id": "batch_20260127_101532"
+}
+
+{
+  "timestamp": "2026-01-27T10:16:45.234Z",
+  "level": "ERROR",
+  "message": "Validation failed",
+  "rule_name": "complex_rule_123",
+  "stage": "logical_to_technical",
+  "validation_errors": [
+    "Missing placeholder: ${table_name}",
+    "Invalid SQL syntax at line 5"
+  ],
+  "batch_id": "batch_20260127_101532"
+}
+
+{
+  "timestamp": "2026-01-27T10:25:15.567Z",
+  "level": "INFO",
+  "message": "Conversion completed",
+  "batch_id": "batch_20260127_101532",
+  "summary": {
+    "total_rules": 150,
+    "success": 142,
+    "failed": 3,
+    "validation_failed": 5,
+    "total_llm_calls": 284,
+    "sessions_used": 3,
+    "duration_seconds": 583
+  }
+}
+```
+
+## 10. Scalability & Future Extensions
+
+### Current Design Strengths
+
+1. **Horizontal Scalability**
+   - Stateless conversion stages
+   - Checkpoint-based recovery enables distributed processing
+   - Rules can be partitioned across workers
+
+2. **Extensibility Points**
+   - New subdimensions: Add prompt templates
+   - New output formats: Implement new templates, add validators
+   - New LLM providers: Implement `LLMProvider` interface
+   - New grouping strategies: Implement `GroupingStrategy`
+   - New validators: Implement `Validator` interface
+
+3. **Resilience**
+   - Session-aware processing
+   - Exponential backoff
+   - Checkpoint-based recovery
+   - Separate failure categorization
+
+### Future Enhancement Paths
+
+#### Phase 1: Performance Optimization
+```
+1. Parallel Processing
+   - Multi-threaded rule processing
+   - Respect LLM rate limits globally (shared counter)
+   - Use ThreadPoolExecutor with semaphore
+
+2. Caching Layer
+   - Cache LLM responses for identical prompts
+   - Redis/Memcached integration
+   - TTL-based invalidation
+
+3. Batch LLM Calls
+   - If provider supports batching, group multiple rules
+   - Reduce HTTP overhead
+```
+
+#### Phase 2: Advanced Features
+```
+1. Rule Dependencies
+   - DAG-based execution (if rule B depends on rule A)
+   - Topological sort for execution order
+
+2. Incremental Processing
+   - Only process changed rules
+   - Hash-based change detection
+
+3. A/B Testing
+   - Run multiple prompt variations
+   - Compare outputs, select best
+
+4. Human-in-the-Loop
+   - Flag low-confidence conversions for review
+   - Feedback loop to improve prompts
+```
+
+#### Phase 3: Enterprise Features
+```
+1. Multi-Tenancy
+   - Tenant-specific prompts & templates
+   - Isolated execution contexts
+
+2. Audit Trail
+   - Full lineage tracking
+   - Version control for rules
+   - Compliance reporting
+
+3. API Layer
+   - REST API for rule submission
+   - Webhook notifications
+   - Dashboard for monitoring
+
+4. Advanced Validation
+   - Query performance analysis
+   - Semantic equivalence checking
+   - Integration tests against sample data
+```
+
+### Extension Example: Adding New Subdimension
+
+```python
+# 1. Create prompt template
+# config/prompts/business_to_logical/accuracy_sql.yaml
+name: "accuracy_business_to_logical_sql"
+subdimension: "accuracy"
+# ... define prompt
+
+# 2. Update Rule model (if needed)
+# domain/models.py
+@dataclass
+class Rule:
+    # ... existing fields
+    accuracy_threshold: Optional[float] = None  # New field
+    
+    def get_subdimension_fields(self) -> Dict[str, Any]:
+        field_map = {
+            'conformity': {...},
+            'validity': {...},
+            'accuracy': {  # New subdimension
+                'accuracy_threshold': self.accuracy_threshold
+            }
+        }
+        return field_map.get(self.subdimension, {})
+
+# 3. Create validator (if needed)
+# services/validation/accuracy_validator.py
+class AccuracyValidator(Validator):
+    def validate(self, result: ConversionResult) -> Tuple[bool, List[str]]:
+        # Custom validation logic
+        pass
+
+# 4. Register in config
+# config/config.yaml
+validation:
+  validators:
+    - structure_validator
+    - completeness_validator
+    - mapping_validator
+    - accuracy_validator  # New validator
+
+# No code changes needed in core pipeline!
+```
+
+### Monitoring Recommendations
+
+```
+1. Metrics to Track
+   - LLM calls per second
+   - Success rate per subdimension
+   - Average retry count
+   - Session rotation frequency
+   - Validation failure rate by type
+   - P95/P99 latency per stage
+
+2. Alerting
+   - High failure rate (>5%)
+   - Frequent session rotations (>3 per hour)
+   - Rate limit errors (consecutive 5+)
+   - Checkpoint not updating (30+ min)
+
+3. Integration
+   - Prometheus metrics export
+   - Grafana dashboards
+   - PagerDuty/OpsGenie alerts
+```
+
+---
+
+## Summary
+
+This architecture provides:
+
+✅ **Separation of Concerns**: Clean boundaries between IO, conversion, validation, state  
+✅ **Extensibility**: Strategy pattern for stages, prompts, validators, grouping  
+✅ **Resilience**: Session management, retries, checkpointing, recovery  
+✅ **Production-Ready**: Structured logging, configuration management, error handling  
+✅ **SOLID Principles**: Interface-based design, single responsibility, dependency injection  
+✅ **Scalability**: Stateless design, parallelization-ready, caching support  
+
+The design balances **simplicity** (clear abstractions) with **flexibility** (pluggable components) while maintaining **reliability** (comprehensive error handling) for enterprise-grade rule conversion at scale.
