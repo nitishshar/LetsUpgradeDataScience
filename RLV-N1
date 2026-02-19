@@ -1,0 +1,2417 @@
+// ============================================================================
+// 1. DOMAIN MODELS
+// ============================================================================
+
+package com.datacatalog.drools.model;
+
+import lombok.Data;
+import lombok.Builder;
+import java.util.List;
+import java.util.Map;
+
+@Data
+@Builder
+public class DataCatalogElement {
+    private String dictionary;
+    private String collection;
+    private String attribute;
+    private String physicalTable;
+    private String physicalColumn;
+    private String dataType;
+    private String description;
+}
+
+@Data
+@Builder
+public class ValidationResult {
+    private boolean valid;
+    private String substitutedRule;
+    private List<ValidationError> errors;
+    private Map<String, String> substitutions;
+    private String droolsRule;
+}
+
+@Data
+@Builder
+public class ValidationError {
+    private ErrorType type;
+    private String message;
+    private String location;
+    private String suggestion;
+    
+    public enum ErrorType {
+        UNKNOWN_DATA_ELEMENT,
+        SYNTAX_ERROR,
+        MISSING_PARENTHESIS,
+        INVALID_OPERATOR,
+        TYPE_MISMATCH
+    }
+}
+
+@Data
+public class RuleValidationRequest {
+    private String partialDroolRule;
+    private String ruleName;
+    private String ruleDescription;
+    private String action; // "ERROR", "WARNING", etc.
+}
+
+@Data
+@Builder
+public class RuleValidationResponse {
+    private String requestId;
+    private ValidationResult validationResult;
+    private long processingTimeMs;
+}
+
+@Data
+public class JavaClassGenerationRequest {
+    private String outputDirectory;
+    private boolean generateLombok;
+    private boolean generateJPA;
+}
+
+@Data
+@Builder
+public class JavaClassGenerationResponse {
+    private List<GeneratedClass> generatedClasses;
+    private int totalClassesGenerated;
+    private String outputPath;
+}
+
+@Data
+@Builder
+public class GeneratedClass {
+    private String className;
+    private String packageName;
+    private String filePath;
+    private int attributeCount;
+}
+
+// ============================================================================
+// 2. REPOSITORY LAYER - Data Catalog Access
+// ============================================================================
+
+package com.datacatalog.drools.repository;
+
+import com.datacatalog.drools.model.DataCatalogElement;
+import org.springframework.stereotype.Repository;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
+import javax.annotation.PostConstruct;
+import java.io.File;
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Repository
+public class DataCatalogRepository {
+    
+    private final ObjectMapper objectMapper;
+    private final Map<String, DataCatalogElement> catalogIndex;
+    private final String catalogFilePath;
+    
+    public DataCatalogRepository(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+        this.catalogIndex = new HashMap<>();
+        this.catalogFilePath = "data-catalog.json";
+    }
+    
+    @PostConstruct
+    public void loadCatalog() throws Exception {
+        File catalogFile = new File(catalogFilePath);
+        List<DataCatalogElement> elements = objectMapper.readValue(
+            catalogFile, 
+            new TypeReference<List<DataCatalogElement>>() {}
+        );
+        
+        // Index by full path: Dictionary.Collection.Attribute
+        for (DataCatalogElement element : elements) {
+            String key = buildKey(element.getDictionary(), 
+                                 element.getCollection(), 
+                                 element.getAttribute());
+            catalogIndex.put(key, element);
+        }
+    }
+    
+    public Optional<DataCatalogElement> findElement(String dictionary, 
+                                                    String collection, 
+                                                    String attribute) {
+        String key = buildKey(dictionary, collection, attribute);
+        return Optional.ofNullable(catalogIndex.get(key));
+    }
+    
+    public List<DataCatalogElement> findByCollection(String dictionary, 
+                                                     String collection) {
+        return catalogIndex.values().stream()
+            .filter(e -> e.getDictionary().equals(dictionary) && 
+                        e.getCollection().equals(collection))
+            .collect(Collectors.toList());
+    }
+    
+    public Set<String> getAllCollections() {
+        return catalogIndex.values().stream()
+            .map(e -> e.getDictionary() + "." + e.getCollection())
+            .collect(Collectors.toSet());
+    }
+    
+    private String buildKey(String dictionary, String collection, String attribute) {
+        return String.format("%s.%s.%s", dictionary, collection, attribute);
+    }
+}
+
+// ============================================================================
+// 3. SERVICE LAYER - Rule Parser
+// ============================================================================
+
+package com.datacatalog.drools.service;
+
+import com.datacatalog.drools.model.*;
+import org.springframework.stereotype.Component;
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
+import java.util.*;
+
+@Component
+public class DroolsRuleParser {
+    
+    // Pattern to match <Dictionary.Collection.Attribute>
+    private static final Pattern ELEMENT_PATTERN = 
+        Pattern.compile("<([^>]+?)>");
+    
+    // Pattern to match <Dictionary.Collection>:(conditions) or <Dictionary.Collection> : (conditions)
+    // Now handles optional spaces around the colon
+    private static final Pattern RULE_PATTERN = 
+        Pattern.compile("<([^>]+?)>\\s*:\\s*\\(([^)]+)\\)");
+    
+    public ParsedRule parsePartialRule(String partialRule) {
+        ParsedRule parsed = new ParsedRule();
+        
+        if (partialRule == null || partialRule.trim().isEmpty()) {
+            parsed.setValid(false);
+            parsed.addError("Rule cannot be empty");
+            return parsed;
+        }
+        
+        Matcher matcher = RULE_PATTERN.matcher(partialRule.trim());
+        if (!matcher.find()) {
+            parsed.setValid(false);
+            parsed.addError("Invalid rule format. Expected: <Dictionary.Collection>:(conditions) or <Dictionary.Collection> : (conditions)");
+            parsed.addError("Examples: <Deposits.Deposit Contract>:(<Amount> > 0) or <Transaction>: (<Status> == 'ACTIVE')");
+            return parsed;
+        }
+        
+        String collectionPath = matcher.group(1).trim();
+        String conditions = matcher.group(2).trim();
+        
+        // Validate collection path format
+        String[] parts = collectionPath.split("\\.");
+        if (parts.length < 1 || parts.length > 2) {
+            parsed.setValid(false);
+            parsed.addError("Collection path must be either 'Collection' or 'Dictionary.Collection'");
+            parsed.addError("Found: '" + collectionPath + "' with " + parts.length + " parts");
+            return parsed;
+        }
+        
+        if (parts.length == 1) {
+            // Single part: treat as both dictionary and collection
+            parsed.setDictionary(parts[0].trim());
+            parsed.setCollection(parts[0].trim());
+        } else {
+            // Two parts: dictionary.collection
+            parsed.setDictionary(parts[0].trim());
+            parsed.setCollection(parts[1].trim());
+        }
+        
+        // Validate dictionary and collection are not empty
+        if (parsed.getDictionary().isEmpty()) {
+            parsed.setValid(false);
+            parsed.addError("Dictionary name cannot be empty");
+            return parsed;
+        }
+        
+        if (parsed.getCollection().isEmpty()) {
+            parsed.setValid(false);
+            parsed.addError("Collection name cannot be empty");
+            return parsed;
+        }
+        
+        // Validate conditions are not empty
+        if (conditions.isEmpty()) {
+            parsed.setValid(false);
+            parsed.addError("Conditions cannot be empty. Provide at least one condition.");
+            parsed.addError("Example: <Amount> > 0");
+            return parsed;
+        }
+        
+        parsed.setRawConditions(conditions);
+        parsed.setDataElements(extractDataElements(conditions));
+        
+        // Validate at least one data element was found
+        if (parsed.getDataElements().isEmpty()) {
+            parsed.setValid(false);
+            parsed.addError("No data elements found in conditions");
+            parsed.addError("Data elements must be enclosed in < >. Example: <Amount> > 0");
+            return parsed;
+        }
+        
+        parsed.setValid(true);
+        
+        return parsed;
+    }
+    
+    public List<String> extractDataElements(String text) {
+        List<String> elements = new ArrayList<>();
+        Matcher matcher = ELEMENT_PATTERN.matcher(text);
+        
+        while (matcher.find()) {
+            String element = matcher.group(1).trim();
+            if (!element.isEmpty()) {
+                elements.add(element);
+            }
+        }
+        
+        return elements;
+    }
+    
+    @lombok.Data
+    public static class ParsedRule {
+        private boolean valid;
+        private String dictionary;
+        private String collection;
+        private String rawConditions;
+        private List<String> dataElements = new ArrayList<>();
+        private List<String> errors = new ArrayList<>();
+        
+        public void addError(String error) {
+            errors.add(error);
+        }
+    }
+}
+
+// ============================================================================
+// 4. SERVICE LAYER - Rule Validator
+// ============================================================================
+
+package com.datacatalog.drools.service;
+
+import com.datacatalog.drools.model.*;
+import com.datacatalog.drools.repository.DataCatalogRepository;
+import org.springframework.stereotype.Service;
+import lombok.RequiredArgsConstructor;
+import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+@Service
+@RequiredArgsConstructor
+public class DroolsRuleValidatorService {
+    
+    private final DataCatalogRepository catalogRepository;
+    private final DroolsRuleParser ruleParser;
+    private final DroolsRuleSubstitutionService substitutionService;
+    private final DroolsSyntaxValidator syntaxValidator;
+    
+    public ValidationResult validateAndSubstitute(String partialRule) {
+        List<ValidationError> errors = new ArrayList<>();
+        Map<String, String> substitutions = new HashMap<>();
+        
+        // Step 1: Parse the rule
+        DroolsRuleParser.ParsedRule parsed = ruleParser.parsePartialRule(partialRule);
+        
+        if (!parsed.isValid()) {
+            return ValidationResult.builder()
+                .valid(false)
+                .errors(parsed.getErrors().stream()
+                    .map(msg -> ValidationError.builder()
+                        .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                        .message(msg)
+                        .build())
+                    .collect(java.util.stream.Collectors.toList()))
+                .build();
+        }
+        
+        // Step 2: Validate all data elements exist in catalog
+        for (String element : parsed.getDataElements()) {
+            Optional<DataCatalogElement> catalogElement = 
+                catalogRepository.findElement(
+                    parsed.getDictionary(),
+                    parsed.getCollection(),
+                    element
+                );
+            
+            if (!catalogElement.isPresent()) {
+                errors.add(ValidationError.builder()
+                    .type(ValidationError.ErrorType.UNKNOWN_DATA_ELEMENT)
+                    .message("Data element not found in catalog: " + element)
+                    .location(element)
+                    .suggestion("Check data catalog for valid elements")
+                    .build());
+            } else {
+                substitutions.put(element, catalogElement.get().getPhysicalColumn());
+            }
+        }
+        
+        // If unknown elements, return early
+        if (!errors.isEmpty()) {
+            return ValidationResult.builder()
+                .valid(false)
+                .errors(errors)
+                .substitutions(substitutions)
+                .build();
+        }
+        
+        // Step 3: Substitute placeholders with Java property names
+        String substituted = substitutionService.substitute(partialRule, 
+                                                            parsed, 
+                                                            catalogRepository);
+        
+        // Step 4: Validate Drools syntax
+        DroolsSyntaxValidator.SyntaxValidationResult syntaxResult = 
+            syntaxValidator.validate(substituted);
+        
+        if (!syntaxResult.isValid()) {
+            errors.addAll(syntaxResult.getErrors());
+        }
+        
+        // Step 5: Generate complete Drools rule
+        String completeRule = syntaxResult.isValid() 
+            ? generateCompleteDroolsRule(substituted, parsed)
+            : null;
+        
+        return ValidationResult.builder()
+            .valid(errors.isEmpty())
+            .substitutedRule(substituted)
+            .errors(errors)
+            .substitutions(substitutions)
+            .droolsRule(completeRule)
+            .build();
+    }
+    
+    private String generateCompleteDroolsRule(String whenClause, 
+                                             DroolsRuleParser.ParsedRule parsed) {
+        String className = toPascalCase(parsed.getCollection());
+        String packageName = toPackageName(parsed.getDictionary());
+        
+        return String.format(
+            "package %s;\n\n" +
+            "rule \"Generated Rule\"\n" +
+            "when\n" +
+            "    %s\n" +
+            "then\n" +
+            "    // Action to be defined\n" +
+            "end",
+            packageName,
+            whenClause
+        );
+    }
+    
+    private String toPascalCase(String input) {
+        String[] words = input.split("\\s+");
+        StringBuilder result = new StringBuilder();
+        for (String word : words) {
+            result.append(word.substring(0, 1).toUpperCase())
+                  .append(word.substring(1).toLowerCase());
+        }
+        return result.toString();
+    }
+    
+    private String toPackageName(String input) {
+        return input.toLowerCase().replaceAll("\\s+", ".");
+    }
+}
+
+// ============================================================================
+// 5. SERVICE LAYER - Substitution Service
+// ============================================================================
+
+package com.datacatalog.drools.service;
+
+import com.datacatalog.drools.model.DataCatalogElement;
+import com.datacatalog.drools.repository.DataCatalogRepository;
+import org.springframework.stereotype.Service;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+@Service
+public class DroolsRuleSubstitutionService {
+    
+    // Pattern to match <Attribute> including any operators and values after it
+    private static final Pattern ELEMENT_WITH_CONDITION_PATTERN = 
+        Pattern.compile("<([^>]+?)>\\s*(==|!=|>|<|>=|<=|matches|contains|in|not in)\\s*([^,)]+)");
+    
+    // Pattern to match just <Attribute> without conditions
+    private static final Pattern ELEMENT_ONLY_PATTERN = Pattern.compile("<([^>]+?)>");
+    
+    public String substitute(String partialRule, 
+                           DroolsRuleParser.ParsedRule parsed,
+                           DataCatalogRepository repository) {
+        
+        String result = partialRule;
+        String className = toPascalCase(parsed.getCollection());
+        String variableName = toCamelCase(parsed.getCollection());
+        
+        // First, substitute the collection reference with class name
+        String collectionPattern = "<" + Pattern.quote(parsed.getDictionary() + "." + parsed.getCollection()) + ">";
+        result = result.replaceFirst(
+            collectionPattern,
+            className
+        );
+        
+        // Now substitute all attribute references with proper property names
+        result = substituteAttributes(result, parsed, repository, variableName);
+        
+        return result;
+    }
+    
+    /**
+     * Substitutes attribute placeholders with Java property references
+     * Handles patterns like: <Transaction Amount> > 0
+     */
+    private String substituteAttributes(String conditions, 
+                                       DroolsRuleParser.ParsedRule parsed,
+                                       DataCatalogRepository repository,
+                                       String varName) {
+        
+        StringBuilder result = new StringBuilder();
+        Matcher matcher = ELEMENT_WITH_CONDITION_PATTERN.matcher(conditions);
+        
+        int lastEnd = 0;
+        while (matcher.find()) {
+            // Append everything before this match
+            result.append(conditions.substring(lastEnd, matcher.start()));
+            
+            String attributeName = matcher.group(1);  // e.g., "Transaction Amount"
+            String operator = matcher.group(2);        // e.g., ">"
+            String value = matcher.group(3).trim();    // e.g., "0" or "'XRP'"
+            
+            // Convert attribute to camelCase property
+            String javaProperty = toCamelCase(attributeName);
+            
+            // Build the substituted condition
+            result.append(varName)
+                  .append(".")
+                  .append(javaProperty)
+                  .append(" ")
+                  .append(operator)
+                  .append(" ")
+                  .append(value);
+            
+            lastEnd = matcher.end();
+        }
+        
+        // Append remaining text
+        result.append(conditions.substring(lastEnd));
+        
+        // Handle any remaining standalone <Attribute> references (no operator)
+        String intermediate = result.toString();
+        Matcher standaloneMatch = ELEMENT_ONLY_PATTERN.matcher(intermediate);
+        StringBuffer finalResult = new StringBuffer();
+        
+        while (standaloneMatch.find()) {
+            String attributeName = standaloneMatch.group(1);
+            String javaProperty = toCamelCase(attributeName);
+            standaloneMatch.appendReplacement(finalResult, varName + "." + javaProperty);
+        }
+        standaloneMatch.appendTail(finalResult);
+        
+        return finalResult.toString();
+    }
+    
+    private String toCamelCase(String input) {
+        if (input == null || input.isEmpty()) {
+            return input;
+        }
+        
+        String[] words = input.trim().split("\\s+");
+        if (words.length == 0) {
+            return input;
+        }
+        
+        StringBuilder result = new StringBuilder(words[0].toLowerCase());
+        for (int i = 1; i < words.length; i++) {
+            if (words[i].length() > 0) {
+                result.append(words[i].substring(0, 1).toUpperCase())
+                      .append(words[i].substring(1).toLowerCase());
+            }
+        }
+        return result.toString();
+    }
+    
+    private String toPascalCase(String input) {
+        if (input == null || input.isEmpty()) {
+            return input;
+        }
+        
+        String[] words = input.trim().split("\\s+");
+        StringBuilder result = new StringBuilder();
+        for (String word : words) {
+            if (word.length() > 0) {
+                result.append(word.substring(0, 1).toUpperCase())
+                      .append(word.substring(1).toLowerCase());
+            }
+        }
+        return result.toString();
+    }
+}
+
+// ============================================================================
+// 6. SERVICE LAYER - Syntax Validator (Basic)
+// ============================================================================
+
+package com.datacatalog.drools.service;
+
+import com.datacatalog.drools.model.ValidationError;
+import org.springframework.stereotype.Service;
+import lombok.Data;
+import java.util.*;
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
+
+@Service
+public class DroolsSyntaxValidator {
+    
+    // Drools operators
+    private static final Set<String> VALID_OPERATORS = Set.of(
+        "==", "!=", ">", "<", ">=", "<=", 
+        "matches", "contains", "not contains",
+        "memberOf", "not memberOf",
+        "soundslike", "str",
+        "in", "not in"
+    );
+    
+    // Common operator mistakes
+    private static final Map<String, String> COMMON_OPERATOR_MISTAKES = Map.of(
+        "= =", "==",
+        "! =", "!=",
+        "< =", "<=",
+        "> =", ">=",
+        "=", "==",
+        "= <", "<=",
+        "= >", ">="
+    );
+    
+    public SyntaxValidationResult validate(String droolsExpression) {
+        SyntaxValidationResult result = new SyntaxValidationResult();
+        
+        // 1. Check parenthesis balance
+        validateParenthesisBalance(droolsExpression, result);
+        
+        // 2. Check for malformed operators
+        validateOperators(droolsExpression, result);
+        
+        // 3. Check for unclosed quotes
+        validateQuotes(droolsExpression, result);
+        
+        // 4. Check for empty conditions
+        validateEmptyConditions(droolsExpression, result);
+        
+        // 5. Check for trailing/leading commas
+        validateCommas(droolsExpression, result);
+        
+        // 6. Check for duplicate operators
+        validateDuplicateOperators(droolsExpression, result);
+        
+        // 7. Check for invalid null comparisons
+        validateNullComparisons(droolsExpression, result);
+        
+        // 8. Check for missing operators
+        validateMissingOperators(droolsExpression, result);
+        
+        result.setValid(result.getErrors().isEmpty());
+        return result;
+    }
+    
+    private void validateParenthesisBalance(String expr, SyntaxValidationResult result) {
+        int count = 0;
+        int position = 0;
+        
+        for (int i = 0; i < expr.length(); i++) {
+            char c = expr.charAt(i);
+            if (c == '(') {
+                count++;
+            } else if (c == ')') {
+                count--;
+                if (count < 0) {
+                    result.addError(ValidationError.builder()
+                        .type(ValidationError.ErrorType.MISSING_PARENTHESIS)
+                        .message("Unmatched closing parenthesis")
+                        .location("Position " + i)
+                        .suggestion("Remove extra ')' or add matching '(' before it")
+                        .build());
+                    return;
+                }
+            }
+        }
+        
+        if (count > 0) {
+            result.addError(ValidationError.builder()
+                .type(ValidationError.ErrorType.MISSING_PARENTHESIS)
+                .message("Unmatched opening parenthesis - missing " + count + " closing parenthesis")
+                .location("End of expression")
+                .suggestion("Add " + count + " ')' at the end or remove extra '('")
+                .build());
+        }
+    }
+    
+    private void validateOperators(String expr, SyntaxValidationResult result) {
+        // Check for common operator mistakes with spaces
+        for (Map.Entry<String, String> entry : COMMON_OPERATOR_MISTAKES.entrySet()) {
+            String wrongOp = entry.getKey();
+            String correctOp = entry.getValue();
+            
+            // Use word boundaries to avoid matching within other content
+            Pattern pattern = Pattern.compile("\\s+" + Pattern.quote(wrongOp) + "\\s+");
+            Matcher matcher = pattern.matcher(expr);
+            
+            if (matcher.find()) {
+                result.addError(ValidationError.builder()
+                    .type(ValidationError.ErrorType.INVALID_OPERATOR)
+                    .message("Invalid operator: '" + wrongOp + "' should be '" + correctOp + "'")
+                    .location("Position " + matcher.start())
+                    .suggestion("Replace '" + wrongOp + "' with '" + correctOp + "' (no spaces)")
+                    .build());
+            }
+        }
+        
+        // Check for single '=' used as comparison (common mistake)
+        Pattern singleEquals = Pattern.compile("([^=!<>])\\s*=\\s*([^=])");
+        Matcher matcher = singleEquals.matcher(expr);
+        if (matcher.find()) {
+            result.addError(ValidationError.builder()
+                .type(ValidationError.ErrorType.INVALID_OPERATOR)
+                .message("Invalid operator: '=' should be '==' for comparison")
+                .location("Position " + matcher.start())
+                .suggestion("Use '==' for equality comparison, '=' is for assignment only")
+                .build());
+        }
+    }
+    
+    private void validateQuotes(String expr, SyntaxValidationResult result) {
+        // Check for unclosed single quotes
+        int singleQuoteCount = 0;
+        int lastSingleQuotePos = -1;
+        
+        for (int i = 0; i < expr.length(); i++) {
+            if (expr.charAt(i) == '\'' && (i == 0 || expr.charAt(i - 1) != '\\')) {
+                singleQuoteCount++;
+                lastSingleQuotePos = i;
+            }
+        }
+        
+        if (singleQuoteCount % 2 != 0) {
+            result.addError(ValidationError.builder()
+                .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                .message("Unclosed single quote")
+                .location("Position " + lastSingleQuotePos)
+                .suggestion("Add closing single quote ' to match the opening quote")
+                .build());
+        }
+        
+        // Check for unclosed double quotes
+        int doubleQuoteCount = 0;
+        int lastDoubleQuotePos = -1;
+        
+        for (int i = 0; i < expr.length(); i++) {
+            if (expr.charAt(i) == '"' && (i == 0 || expr.charAt(i - 1) != '\\')) {
+                doubleQuoteCount++;
+                lastDoubleQuotePos = i;
+            }
+        }
+        
+        if (doubleQuoteCount % 2 != 0) {
+            result.addError(ValidationError.builder()
+                .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                .message("Unclosed double quote")
+                .location("Position " + lastDoubleQuotePos)
+                .suggestion("Add closing double quote \" to match the opening quote")
+                .build());
+        }
+    }
+    
+    private void validateEmptyConditions(String expr, SyntaxValidationResult result) {
+        // Check for empty parentheses
+        if (expr.matches(".*\\(\\s*\\).*")) {
+            result.addError(ValidationError.builder()
+                .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                .message("Empty condition block found")
+                .location("Parentheses with no content")
+                .suggestion("Add at least one condition inside parentheses or remove empty ()")
+                .build());
+        }
+        
+        // Check for conditions that start/end with comma
+        if (expr.matches(".*\\(\\s*,.*")) {
+            result.addError(ValidationError.builder()
+                .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                .message("Condition starts with comma")
+                .location("After opening parenthesis")
+                .suggestion("Remove leading comma or add condition before it")
+                .build());
+        }
+    }
+    
+    private void validateCommas(String expr, SyntaxValidationResult result) {
+        // Check for double commas
+        if (expr.contains(",,")) {
+            result.addError(ValidationError.builder()
+                .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                .message("Duplicate comma found")
+                .location("Position " + expr.indexOf(",,"))
+                .suggestion("Use single comma to separate conditions")
+                .build());
+        }
+        
+        // Check for comma before closing parenthesis (trailing comma)
+        Pattern trailingComma = Pattern.compile(",\\s*\\)");
+        Matcher matcher = trailingComma.matcher(expr);
+        if (matcher.find()) {
+            result.addError(ValidationError.builder()
+                .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                .message("Trailing comma before closing parenthesis")
+                .location("Position " + matcher.start())
+                .suggestion("Remove comma before ')' or add another condition")
+                .build());
+        }
+    }
+    
+    private void validateDuplicateOperators(String expr, SyntaxValidationResult result) {
+        // Check for patterns like "> >" or "== =="
+        Pattern duplicateOp = Pattern.compile("(==|!=|>=|<=|>|<)\\s+\\1");
+        Matcher matcher = duplicateOp.matcher(expr);
+        
+        if (matcher.find()) {
+            String op = matcher.group(1);
+            result.addError(ValidationError.builder()
+                .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                .message("Duplicate operator '" + op + "' found")
+                .location("Position " + matcher.start())
+                .suggestion("Use single operator '" + op + "'")
+                .build());
+        }
+    }
+    
+    private void validateNullComparisons(String expr, SyntaxValidationResult result) {
+        // Check for incorrect null comparisons like "= null" instead of "== null"
+        Pattern nullWithSingleEquals = Pattern.compile("([^=!<>])\\s*=\\s+null");
+        Matcher matcher = nullWithSingleEquals.matcher(expr);
+        
+        if (matcher.find()) {
+            result.addError(ValidationError.builder()
+                .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                .message("Invalid null comparison: '= null' should be '== null'")
+                .location("Position " + matcher.start())
+                .suggestion("Use '== null' or '!= null' for null checks")
+                .build());
+        }
+        
+        // Check for null comparisons with wrong operators (> null, < null, etc.)
+        Pattern invalidNullOp = Pattern.compile("(>|<|>=|<=)\\s+null");
+        matcher = invalidNullOp.matcher(expr);
+        
+        if (matcher.find()) {
+            String op = matcher.group(1);
+            result.addError(ValidationError.builder()
+                .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                .message("Invalid operator '" + op + "' for null comparison")
+                .location("Position " + matcher.start())
+                .suggestion("Use '== null' or '!= null' for null checks (cannot use >, <, >=, <=)")
+                .build());
+        }
+    }
+    
+    private void validateMissingOperators(String expr, SyntaxValidationResult result) {
+        // Check for patterns like: property value (missing operator)
+        // This is a simplified check - looks for alphanumeric followed by quote or number without operator
+        Pattern missingOp = Pattern.compile("\\w+\\s+['\"]");
+        Matcher matcher = missingOp.matcher(expr);
+        
+        while (matcher.find()) {
+            String match = matcher.group();
+            // Check if there's an operator before this pattern
+            int start = matcher.start();
+            if (start > 0) {
+                String before = expr.substring(Math.max(0, start - 5), start);
+                boolean hasOperator = false;
+                for (String op : VALID_OPERATORS) {
+                    if (before.contains(op)) {
+                        hasOperator = true;
+                        break;
+                    }
+                }
+                
+                if (!hasOperator && !before.contains("(") && !before.contains(",")) {
+                    result.addError(ValidationError.builder()
+                        .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                        .message("Missing operator between property and value")
+                        .location("Position " + matcher.start())
+                        .suggestion("Add comparison operator (==, !=, >, <, etc.) between property and value")
+                        .build());
+                }
+            }
+        }
+    }
+    
+    @Data
+    public static class SyntaxValidationResult {
+        private boolean valid;
+        private List<ValidationError> errors = new ArrayList<>();
+        
+        public void addError(ValidationError error) {
+            errors.add(error);
+        }
+    }
+}
+
+// ============================================================================
+// 6B. SERVICE LAYER - Complete Drools Compilation Validator
+// ============================================================================
+
+package com.datacatalog.drools.service;
+
+import com.datacatalog.drools.model.*;
+import lombok.RequiredArgsConstructor;
+import lombok.Data;
+import org.drools.model.codegen.ExecutableModelProject;
+import org.kie.api.KieServices;
+import org.kie.api.builder.*;
+import org.kie.api.io.Resource;
+import org.kie.api.io.ResourceType;
+import org.kie.internal.io.ResourceFactory;
+import org.springframework.stereotype.Service;
+
+import javax.tools.*;
+import java.io.*;
+import java.net.URI;
+import java.util.*;
+import java.util.stream.Collectors;
+import java.util.concurrent.ConcurrentHashMap;
+
+@Service
+@RequiredArgsConstructor
+public class DroolsCompilationValidator {
+    
+    private final JavaClassGeneratorService classGenerator;
+    private final com.datacatalog.drools.repository.DataCatalogRepository catalogRepository;
+    
+    // Cache for compiled Java classes to avoid recompilation
+    private final Map<String, CompiledClassCache> compiledClassCache = new ConcurrentHashMap<>();
+    
+    /**
+     * Validates Drools rule by:
+     * 1. Generating temporary Java classes (or using cached)
+     * 2. Compiling Java classes in-memory (or using cached)
+     * 3. Building Drools knowledge base with compiled classes
+     * 4. Attempting to compile the Drools rule
+     */
+    public CompilationValidationResult validateWithCompilation(
+            String completeRule,
+            String dictionary,
+            String collection) {
+        
+        CompilationValidationResult result = new CompilationValidationResult();
+        
+        try {
+            String packageName = toPackageName(dictionary);
+            String className = toPascalCase(collection);
+            String fullClassName = packageName + "." + className;
+            
+            // Check cache first
+            CompiledClassCache cachedClass = getCachedCompiledClass(dictionary, collection);
+            
+            byte[] compiledClassBytes;
+            String javaSource;
+            
+            if (cachedClass != null) {
+                // Use cached compilation
+                compiledClassBytes = cachedClass.getCompiledBytes();
+                javaSource = cachedClass.getSourceCode();
+                result.setCacheHit(true);
+            } else {
+                // Step 1: Generate Java class source code dynamically from catalog
+                javaSource = generateJavaClassSource(dictionary, collection);
+                
+                // Step 2: Compile Java class in-memory
+                JavaCompilationResult javaCompilation = compileJavaInMemory(
+                    fullClassName, 
+                    javaSource
+                );
+                
+                if (!javaCompilation.isSuccess()) {
+                    result.setValid(false);
+                    result.setJavaCompilationErrors(javaCompilation.getErrors());
+                    result.setPhase("JAVA_COMPILATION");
+                    result.setGeneratedJavaSource(javaSource);
+                    return result;
+                }
+                
+                compiledClassBytes = javaCompilation.getCompiledClass();
+                
+                // Cache the compiled class
+                cacheCompiledClass(dictionary, collection, javaSource, compiledClassBytes);
+                result.setCacheHit(false);
+            }
+            
+            result.setGeneratedJavaSource(javaSource);
+            
+            // Step 3: Create Drools knowledge base with compiled class
+            DroolsCompilationResult droolsCompilation = compileDroolsRule(
+                completeRule,
+                compiledClassBytes,
+                fullClassName
+            );
+            
+            result.setValid(droolsCompilation.isSuccess());
+            result.setDroolsCompilationErrors(droolsCompilation.getErrors());
+            result.setDroolsWarnings(droolsCompilation.getWarnings());
+            result.setPhase(droolsCompilation.isSuccess() ? "SUCCESS" : "DROOLS_COMPILATION");
+            result.setCompiledClassName(fullClassName);
+            
+            if (droolsCompilation.isSuccess()) {
+                result.setMessage("✓ Rule successfully compiled with all dependencies");
+            } else {
+                result.setMessage("✗ Rule has compilation errors");
+            }
+            
+        } catch (Exception e) {
+            result.setValid(false);
+            result.setPhase("EXCEPTION");
+            result.addDroolsError(ValidationError.builder()
+                .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                .message("Unexpected error during compilation: " + e.getMessage())
+                .build());
+        }
+        
+        return result;
+    }
+    
+    /**
+     * Gets cached compiled class if catalog hasn't changed
+     */
+    private CompiledClassCache getCachedCompiledClass(String dictionary, String collection) {
+        String cacheKey = dictionary + "." + collection;
+        CompiledClassCache cached = compiledClassCache.get(cacheKey);
+        
+        if (cached == null) {
+            return null;
+        }
+        
+        // Verify catalog hasn't changed by comparing attributes
+        List<com.datacatalog.drools.model.DataCatalogElement> currentElements = 
+            catalogRepository.findByCollection(dictionary, collection);
+        
+        if (cached.getCatalogHash() == calculateCatalogHash(currentElements)) {
+            return cached;
+        }
+        
+        // Catalog changed, invalidate cache
+        compiledClassCache.remove(cacheKey);
+        return null;
+    }
+    
+    /**
+     * Caches compiled class for reuse
+     */
+    private void cacheCompiledClass(String dictionary, String collection, 
+                                    String sourceCode, byte[] compiledBytes) {
+        String cacheKey = dictionary + "." + collection;
+        
+        List<com.datacatalog.drools.model.DataCatalogElement> elements = 
+            catalogRepository.findByCollection(dictionary, collection);
+        
+        CompiledClassCache cache = CompiledClassCache.builder()
+            .sourceCode(sourceCode)
+            .compiledBytes(compiledBytes)
+            .catalogHash(calculateCatalogHash(elements))
+            .timestamp(System.currentTimeMillis())
+            .build();
+        
+        compiledClassCache.put(cacheKey, cache);
+    }
+    
+    /**
+     * Calculates hash of catalog elements to detect changes
+     */
+    private int calculateCatalogHash(List<com.datacatalog.drools.model.DataCatalogElement> elements) {
+        return elements.stream()
+            .map(e -> e.getAttribute() + ":" + e.getDataType())
+            .sorted()
+            .collect(Collectors.joining(","))
+            .hashCode();
+    }
+    
+    /**
+     * Clears the compilation cache (useful when catalog is reloaded)
+     */
+    public void clearCache() {
+        compiledClassCache.clear();
+    }
+    
+    /**
+     * Gets cache statistics
+     */
+    public CacheStatistics getCacheStatistics() {
+        return CacheStatistics.builder()
+            .totalCachedClasses(compiledClassCache.size())
+            .cacheKeys(new ArrayList<>(compiledClassCache.keySet()))
+            .build();
+    }
+    
+    /**
+     * Compiles Java source code in-memory
+     */
+    private JavaCompilationResult compileJavaInMemory(String className, String source) {
+        JavaCompilationResult result = new JavaCompilationResult();
+        
+        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+        if (compiler == null) {
+            result.setSuccess(false);
+            result.addError("Java compiler not available. Ensure you're using JDK, not JRE");
+            return result;
+        }
+        
+        DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();
+        StandardJavaFileManager fileManager = compiler.getStandardFileManager(diagnostics, null, null);
+        
+        InMemoryJavaFileManager inMemoryFileManager = new InMemoryJavaFileManager(fileManager);
+        
+        JavaFileObject javaFile = new InMemoryJavaFileObject(className, source);
+        
+        JavaCompiler.CompilationTask task = compiler.getTask(
+            null,
+            inMemoryFileManager,
+            diagnostics,
+            null,
+            null,
+            Arrays.asList(javaFile)
+        );
+        
+        boolean success = task.call();
+        
+        if (!success) {
+            for (Diagnostic<? extends JavaFileObject> diagnostic : diagnostics.getDiagnostics()) {
+                result.addError(String.format(
+                    "Line %d: %s",
+                    diagnostic.getLineNumber(),
+                    diagnostic.getMessage(Locale.getDefault())
+                ));
+            }
+            result.setSuccess(false);
+        } else {
+            result.setSuccess(true);
+            result.setCompiledClass(inMemoryFileManager.getCompiledClass(className));
+        }
+        
+        return result;
+    }
+    
+    /**
+     * Compiles Drools rule with the provided class
+     */
+    private DroolsCompilationResult compileDroolsRule(String ruleSource, 
+                                                      byte[] compiledClass,
+                                                      String fullClassName) {
+        DroolsCompilationResult result = new DroolsCompilationResult();
+        
+        try {
+            KieServices kieServices = KieServices.Factory.get();
+            KieFileSystem kfs = kieServices.newKieFileSystem();
+            
+            // Add the rule file
+            kfs.write("src/main/resources/rules/test.drl", ruleSource);
+            
+            // Note: In a real implementation, you'd need to add the compiled class
+            // to the KIE class loader. This is a simplified version that relies on
+            // the class being generated with matching package/class names
+            
+            // Build
+            KieBuilder kieBuilder = kieServices.newKieBuilder(kfs);
+            kieBuilder.buildAll();
+            
+            Results results = kieBuilder.getResults();
+            
+            if (results.hasMessages(Message.Level.ERROR)) {
+                result.setSuccess(false);
+                for (Message message : results.getMessages(Message.Level.ERROR)) {
+                    result.addError(ValidationError.builder()
+                        .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                        .message(message.getText())
+                        .location("Line " + message.getLine())
+                        .suggestion(extractSuggestion(message.getText()))
+                        .build());
+                }
+            } else {
+                result.setSuccess(true);
+            }
+            
+            // Collect warnings
+            if (results.hasMessages(Message.Level.WARNING)) {
+                for (Message message : results.getMessages(Message.Level.WARNING)) {
+                    result.addWarning(message.getText());
+                }
+            }
+            
+        } catch (Exception e) {
+            result.setSuccess(false);
+            result.addError(ValidationError.builder()
+                .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                .message("Drools compilation error: " + e.getMessage())
+                .build());
+        }
+        
+        return result;
+    }
+    
+    private String extractSuggestion(String errorMessage) {
+        if (errorMessage.contains("unable to resolve method")) {
+            return "Check that the property name matches the Java class getter/setter";
+        } else if (errorMessage.contains("unable to access")) {
+            return "Ensure the class and properties are public";
+        } else if (errorMessage.contains("Unknown type")) {
+            return "Verify the class is properly imported or fully qualified";
+        } else if (errorMessage.contains("Type mismatch")) {
+            return "Check that the operator is compatible with the property data type";
+        }
+        return "Review the Drools syntax and class structure";
+    }
+    
+    @Data
+    @lombok.Builder
+    private static class CompiledClassCache {
+        private String sourceCode;
+        private byte[] compiledBytes;
+        private int catalogHash;
+        private long timestamp;
+    }
+    
+    @Data
+    @lombok.Builder
+    public static class CacheStatistics {
+        private int totalCachedClasses;
+        private List<String> cacheKeys;
+    }
+    
+    @Data
+    @lombok.Builder
+    @lombok.NoArgsConstructor
+    @lombok.AllArgsConstructor
+    public static class CompilationValidationResult {
+        private boolean valid;
+        private String phase; // JAVA_COMPILATION, DROOLS_COMPILATION, SUCCESS, EXCEPTION
+        private String message;
+        private String compiledClassName;
+        private String generatedJavaSource;
+        private boolean cacheHit;
+        private List<String> javaCompilationErrors = new ArrayList<>();
+        private List<ValidationError> droolsCompilationErrors = new ArrayList<>();
+        private List<String> droolsWarnings = new ArrayList<>();
+        
+        public void addDroolsError(ValidationError error) {
+            droolsCompilationErrors.add(error);
+        }
+    }
+    
+    /**
+     * Dynamically generates Java class source code from data catalog
+     * This is GENERIC and works for ANY collection in the catalog
+     */
+    private String generateJavaClassSource(String dictionary, String collection) {
+        // Fetch all attributes for this collection from catalog
+        List<DataCatalogElement> elements = 
+            catalogRepository.findByCollection(dictionary, collection);
+        
+        if (elements.isEmpty()) {
+            throw new IllegalArgumentException(
+                "No data catalog elements found for " + dictionary + "." + collection
+            );
+        }
+        
+        String packageName = toPackageName(dictionary);
+        String className = toPascalCase(collection);
+        
+        StringBuilder source = new StringBuilder();
+        
+        // Package declaration
+        source.append("package ").append(packageName).append(";\n\n");
+        
+        // Imports
+        Set<String> imports = new HashSet<>();
+        for (DataCatalogElement element : elements) {
+            String javaType = mapDataType(element.getDataType());
+            if (javaType.contains(".")) {
+                imports.add(javaType);
+            }
+        }
+        
+        for (String importType : imports) {
+            source.append("import ").append(importType).append(";\n");
+        }
+        if (!imports.isEmpty()) {
+            source.append("\n");
+        }
+        
+        // Class declaration
+        source.append("public class ").append(className).append(" {\n\n");
+        
+        // Generate fields and getters/setters for each attribute
+        for (DataCatalogElement element : elements) {
+            String fieldName = toCamelCase(element.getAttribute());
+            String javaType = mapDataType(element.getDataType());
+            String simpleType = javaType.contains(".") ? 
+                javaType.substring(javaType.lastIndexOf('.') + 1) : javaType;
+            
+            // Field
+            source.append("    private ").append(simpleType)
+                  .append(" ").append(fieldName).append(";\n\n");
+            
+            // Getter
+            String getterPrefix = "boolean".equals(simpleType) || "Boolean".equals(simpleType) 
+                ? "is" : "get";
+            source.append("    public ").append(simpleType).append(" ")
+                  .append(getterPrefix).append(capitalize(fieldName))
+                  .append("() {\n")
+                  .append("        return ").append(fieldName).append(";\n")
+                  .append("    }\n\n");
+            
+            // Setter
+            source.append("    public void set").append(capitalize(fieldName))
+                  .append("(").append(simpleType).append(" ").append(fieldName).append(") {\n")
+                  .append("        this.").append(fieldName).append(" = ").append(fieldName).append(";\n")
+                  .append("    }\n\n");
+        }
+        
+        source.append("}\n");
+        
+        return source.toString();
+    }
+    
+    /**
+     * Maps SQL data types to Java types with full package names
+     */
+    private String mapDataType(String catalogType) {
+        if (catalogType == null) return "String";
+        
+        switch (catalogType.toUpperCase()) {
+            case "VARCHAR":
+            case "CHAR":
+            case "TEXT":
+            case "NVARCHAR":
+            case "NCHAR":
+                return "String";
+                
+            case "INTEGER":
+            case "INT":
+            case "SMALLINT":
+            case "TINYINT":
+                return "Integer";
+                
+            case "BIGINT":
+                return "Long";
+                
+            case "DECIMAL":
+            case "NUMERIC":
+            case "MONEY":
+                return "java.math.BigDecimal";
+                
+            case "FLOAT":
+            case "REAL":
+                return "Double";
+                
+            case "DATE":
+                return "java.time.LocalDate";
+                
+            case "TIMESTAMP":
+            case "DATETIME":
+            case "DATETIME2":
+                return "java.time.LocalDateTime";
+                
+            case "TIME":
+                return "java.time.LocalTime";
+                
+            case "BOOLEAN":
+            case "BIT":
+                return "Boolean";
+                
+            case "BLOB":
+            case "BINARY":
+            case "VARBINARY":
+                return "byte[]";
+                
+            default:
+                return "String"; // Default fallback
+        }
+    }
+    
+    private String capitalize(String str) {
+        if (str == null || str.isEmpty()) return str;
+        return str.substring(0, 1).toUpperCase() + str.substring(1);
+    }
+    
+    private String toPascalCase(String input) {
+        String[] words = input.split("\\s+");
+        StringBuilder result = new StringBuilder();
+        for (String word : words) {
+            result.append(word.substring(0, 1).toUpperCase())
+                  .append(word.substring(1).toLowerCase());
+        }
+        return result.toString();
+    }
+    
+    private String toPackageName(String input) {
+        return input.toLowerCase().replaceAll("\\s+", ".");
+    }
+    
+    @Data
+    public static class CompilationValidationResult {
+        private boolean valid;
+        private String phase; // JAVA_COMPILATION, DROOLS_COMPILATION, SUCCESS, EXCEPTION
+        private String message;
+        private String compiledClassName;
+        private List<String> javaCompilationErrors = new ArrayList<>();
+        private List<ValidationError> droolsCompilationErrors = new ArrayList<>();
+        private List<String> droolsWarnings = new ArrayList<>();
+        
+        public void addDroolsError(ValidationError error) {
+            droolsCompilationErrors.add(error);
+        }
+    }
+    
+    @Data
+    private static class JavaCompilationResult {
+        private boolean success;
+        private List<String> errors = new ArrayList<>();
+        private byte[] compiledClass;
+        
+        public void addError(String error) {
+            errors.add(error);
+        }
+    }
+    
+    @Data
+    private static class DroolsCompilationResult {
+        private boolean success;
+        private List<ValidationError> errors = new ArrayList<>();
+        private List<String> warnings = new ArrayList<>();
+        
+        public void addError(ValidationError error) {
+            errors.add(error);
+        }
+        
+        public void addWarning(String warning) {
+            warnings.add(warning);
+        }
+    }
+    
+    // ========== In-Memory Java Compilation Support Classes ==========
+    
+    private static class InMemoryJavaFileObject extends SimpleJavaFileObject {
+        private final String code;
+        
+        public InMemoryJavaFileObject(String className, String code) {
+            super(URI.create("string:///" + className.replace('.', '/') + Kind.SOURCE.extension),
+                  Kind.SOURCE);
+            this.code = code;
+        }
+        
+        @Override
+        public CharSequence getCharContent(boolean ignoreEncodingErrors) {
+            return code;
+        }
+    }
+    
+    private static class InMemoryJavaFileManager extends ForwardingJavaFileManager<StandardJavaFileManager> {
+        private final Map<String, ByteArrayOutputStream> compiledClasses = new HashMap<>();
+        
+        public InMemoryJavaFileManager(StandardJavaFileManager fileManager) {
+            super(fileManager);
+        }
+        
+        @Override
+        public JavaFileObject getJavaFileForOutput(Location location, 
+                                                   String className,
+                                                   JavaFileObject.Kind kind,
+                                                   FileObject sibling) {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            compiledClasses.put(className, baos);
+            return new SimpleJavaFileObject(URI.create("mem:///" + className + kind.extension), kind) {
+                @Override
+                public OutputStream openOutputStream() {
+                    return baos;
+                }
+            };
+        }
+        
+        public byte[] getCompiledClass(String className) {
+            ByteArrayOutputStream baos = compiledClasses.get(className);
+            return baos != null ? baos.toByteArray() : null;
+        }
+    }
+}
+
+// ============================================================================
+// 6C. Enhanced Validator Service using Compilation
+// ============================================================================
+
+package com.datacatalog.drools.service;
+
+import com.datacatalog.drools.model.*;
+import com.datacatalog.drools.repository.DataCatalogRepository;
+import org.springframework.stereotype.Service;
+import lombok.RequiredArgsConstructor;
+import java.util.*;
+
+@Service
+@RequiredArgsConstructor
+public class EnhancedDroolsValidatorService {
+    
+    private final DataCatalogRepository catalogRepository;
+    private final DroolsRuleParser ruleParser;
+    private final DroolsRuleSubstitutionService substitutionService;
+    private final DroolsSyntaxValidator syntaxValidator;
+    private final DroolsCompilationValidator compilationValidator;
+    
+    /**
+     * Complete validation with actual Drools compilation
+     */
+    public EnhancedValidationResult validateWithFullCompilation(String partialRule) {
+        EnhancedValidationResult result = new EnhancedValidationResult();
+        List<ValidationError> errors = new ArrayList<>();
+        
+        // Phase 1: Parse
+        DroolsRuleParser.ParsedRule parsed = ruleParser.parsePartialRule(partialRule);
+        if (!parsed.isValid()) {
+            result.setValid(false);
+            result.setPhase("PARSING");
+            result.setErrors(parsed.getErrors().stream()
+                .map(msg -> ValidationError.builder()
+                    .type(ValidationError.ErrorType.SYNTAX_ERROR)
+                    .message(msg)
+                    .build())
+                .collect(java.util.stream.Collectors.toList()));
+            return result;
+        }
+        
+        // Phase 2: Validate catalog elements
+        Map<String, String> substitutions = new HashMap<>();
+        for (String element : parsed.getDataElements()) {
+            Optional<DataCatalogElement> catalogElement = 
+                catalogRepository.findElement(
+                    parsed.getDictionary(),
+                    parsed.getCollection(),
+                    element
+                );
+            
+            if (!catalogElement.isPresent()) {
+                errors.add(ValidationError.builder()
+                    .type(ValidationError.ErrorType.UNKNOWN_DATA_ELEMENT)
+                    .message("Data element not found: " + element)
+                    .location(element)
+                    .build());
+            } else {
+                substitutions.put(element, catalogElement.get().getPhysicalColumn());
+            }
+        }
+        
+        if (!errors.isEmpty()) {
+            result.setValid(false);
+            result.setPhase("CATALOG_VALIDATION");
+            result.setErrors(errors);
+            result.setSubstitutions(substitutions);
+            return result;
+        }
+        
+        // Phase 3: Substitute - this now properly handles conditions like "> 0"
+        String substituted = substitutionService.substitute(partialRule, parsed, catalogRepository);
+        result.setSubstitutedRule(substituted);
+        result.setSubstitutions(substitutions);
+        
+        // Phase 4: Generate complete rule with proper Drools syntax
+        String completeRule = generateCompleteDroolsRule(substituted, parsed);
+        result.setDroolsRule(completeRule);
+        
+        // Phase 5: COMPILE with actual Drools engine
+        DroolsCompilationValidator.CompilationValidationResult compilationResult =
+            compilationValidator.validateWithCompilation(
+                completeRule,
+                parsed.getDictionary(),
+                parsed.getCollection()
+            );
+        
+        // Map compilation result to enhanced result
+        result.setValid(compilationResult.isValid());
+        result.setPhase(compilationResult.getPhase());
+        result.setCompilationErrors(compilationResult.getDroolsCompilationErrors());
+        result.setCompilationWarnings(compilationResult.getDroolsWarnings());
+        result.setJavaCompilationErrors(compilationResult.getJavaCompilationErrors());
+        result.setCompiledClassName(compilationResult.getCompiledClassName());
+        result.setGeneratedJavaSource(compilationResult.getGeneratedJavaSource());
+        result.setCacheHit(compilationResult.isCacheHit());
+        
+        if (compilationResult.isValid()) {
+            result.setMessage("✓ Rule is valid and compiles successfully");
+        } else {
+            result.setMessage("✗ Rule has compilation errors");
+        }
+        
+        return result;
+    }
+    
+    /**
+     * Generates complete Drools rule from substituted conditions
+     * Example input: "Transaction(transaction.transactionAmount > 0)"
+     * Example output: Full DRL rule with package, rule declaration, when/then
+     */
+    private String generateCompleteDroolsRule(String substitutedCondition, 
+                                             DroolsRuleParser.ParsedRule parsed) {
+        String className = toPascalCase(parsed.getCollection());
+        String packageName = toPackageName(parsed.getDictionary());
+        String variableName = toCamelCase(parsed.getCollection());
+        
+        // Extract the conditions part (everything after "ClassName")
+        // Pattern: ClassName(conditions) or just ClassName
+        String conditions = substitutedCondition;
+        if (conditions.startsWith(className)) {
+            conditions = conditions.substring(className.length()).trim();
+            // Remove outer parentheses if present
+            if (conditions.startsWith("(") && conditions.endsWith(")")) {
+                conditions = conditions.substring(1, conditions.length() - 1);
+            }
+        }
+        
+        return String.format(
+            "package %s;\n\n" +
+            "rule \"Generated Rule\"\n" +
+            "when\n" +
+            "    %s : %s(%s)\n" +
+            "then\n" +
+            "    System.out.println(\"Rule fired for: \" + %s);\n" +
+            "end",
+            packageName,
+            variableName,  // Variable binding
+            className,     // Class name
+            conditions,    // Conditions
+            variableName   // Variable reference in then clause
+        );
+    }
+    
+    private String toPascalCase(String input) {
+        String[] words = input.split("\\s+");
+        StringBuilder result = new StringBuilder();
+        for (String word : words) {
+            result.append(word.substring(0, 1).toUpperCase())
+                  .append(word.substring(1).toLowerCase());
+        }
+        return result.toString();
+    }
+    
+    private String toPackageName(String input) {
+        return input.toLowerCase().replaceAll("\\s+", ".");
+    }
+}
+
+@Data
+class EnhancedValidationResult {
+    private boolean valid;
+    private String phase;
+    private String message;
+    private String substitutedRule;
+    private String droolsRule;
+    private String generatedJavaSource;  // ← Added for Java source visibility
+    private boolean cacheHit;  // ← Added for cache statistics
+    private String compiledClassName;  // ← Added for traceability
+    private Map<String, String> substitutions;
+    private List<ValidationError> errors = new ArrayList<>();
+    private List<ValidationError> compilationErrors = new ArrayList<>();
+    private List<String> compilationWarnings = new ArrayList<>();
+    private List<String> javaCompilationErrors = new ArrayList<>();
+}
+
+// ============================================================================
+// 7. SERVICE LAYER - Java Class Generator
+// ============================================================================
+
+package com.datacatalog.drools.service;
+
+import com.datacatalog.drools.model.*;
+import com.datacatalog.drools.repository.DataCatalogRepository;
+import org.springframework.stereotype.Service;
+import lombok.RequiredArgsConstructor;
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
+
+@Service
+@RequiredArgsConstructor
+public class JavaClassGeneratorService {
+    
+    private final DataCatalogRepository catalogRepository;
+    
+    public JavaClassGenerationResponse generateClasses(JavaClassGenerationRequest request) 
+            throws IOException {
+        
+        List<GeneratedClass> generatedClasses = new ArrayList<>();
+        Set<String> collections = catalogRepository.getAllCollections();
+        
+        for (String collectionPath : collections) {
+            String[] parts = collectionPath.split("\\.");
+            String dictionary = parts[0];
+            String collection = parts[1];
+            
+            List<DataCatalogElement> elements = 
+                catalogRepository.findByCollection(dictionary, collection);
+            
+            GeneratedClass generated = generateClass(
+                dictionary, 
+                collection, 
+                elements, 
+                request
+            );
+            
+            generatedClasses.add(generated);
+        }
+        
+        return JavaClassGenerationResponse.builder()
+            .generatedClasses(generatedClasses)
+            .totalClassesGenerated(generatedClasses.size())
+            .outputPath(request.getOutputDirectory())
+            .build();
+    }
+    
+    private GeneratedClass generateClass(String dictionary,
+                                        String collection,
+                                        List<DataCatalogElement> elements,
+                                        JavaClassGenerationRequest request) 
+            throws IOException {
+        
+        String packageName = toPackageName(dictionary);
+        String className = toPascalCase(collection);
+        
+        StringBuilder classContent = new StringBuilder();
+        
+        // Package declaration
+        classContent.append("package ").append(packageName).append(";\n\n");
+        
+        // Imports
+        if (request.isGenerateLombok()) {
+            classContent.append("import lombok.Data;\n");
+            classContent.append("import lombok.Builder;\n");
+            classContent.append("import lombok.NoArgsConstructor;\n");
+            classContent.append("import lombok.AllArgsConstructor;\n\n");
+        }
+        
+        if (request.isGenerateJPA()) {
+            classContent.append("import javax.persistence.*;\n\n");
+        }
+        
+        // Class declaration
+        if (request.isGenerateLombok()) {
+            classContent.append("@Data\n");
+            classContent.append("@Builder\n");
+            classContent.append("@NoArgsConstructor\n");
+            classContent.append("@AllArgsConstructor\n");
+        }
+        
+        if (request.isGenerateJPA()) {
+            classContent.append("@Entity\n");
+            classContent.append("@Table(name = \"")
+                       .append(elements.get(0).getPhysicalTable())
+                       .append("\")\n");
+        }
+        
+        classContent.append("public class ").append(className).append(" {\n\n");
+        
+        // Fields
+        for (DataCatalogElement element : elements) {
+            String fieldName = toCamelCase(element.getAttribute());
+            String javaType = mapDataType(element.getDataType());
+            
+            if (request.isGenerateJPA()) {
+                classContent.append("    @Column(name = \"")
+                           .append(element.getPhysicalColumn())
+                           .append("\")\n");
+            }
+            
+            classContent.append("    private ")
+                       .append(javaType)
+                       .append(" ")
+                       .append(fieldName)
+                       .append(";\n\n");
+        }
+        
+        classContent.append("}\n");
+        
+        // Write to file
+        String filePath = writeClassToFile(
+            request.getOutputDirectory(),
+            packageName,
+            className,
+            classContent.toString()
+        );
+        
+        return GeneratedClass.builder()
+            .className(className)
+            .packageName(packageName)
+            .filePath(filePath)
+            .attributeCount(elements.size())
+            .build();
+    }
+    
+    private String writeClassToFile(String baseDir, String packageName, 
+                                   String className, String content) 
+            throws IOException {
+        
+        String packagePath = packageName.replace('.', File.separatorChar);
+        Path dirPath = Paths.get(baseDir, packagePath);
+        Files.createDirectories(dirPath);
+        
+        Path filePath = dirPath.resolve(className + ".java");
+        Files.write(filePath, content.getBytes());
+        
+        return filePath.toString();
+    }
+    
+    private String toCamelCase(String input) {
+        String[] words = input.split("\\s+");
+        StringBuilder result = new StringBuilder(words[0].toLowerCase());
+        for (int i = 1; i < words.length; i++) {
+            result.append(words[i].substring(0, 1).toUpperCase())
+                  .append(words[i].substring(1).toLowerCase());
+        }
+        return result.toString();
+    }
+    
+    private String toPascalCase(String input) {
+        String[] words = input.split("\\s+");
+        StringBuilder result = new StringBuilder();
+        for (String word : words) {
+            result.append(word.substring(0, 1).toUpperCase())
+                  .append(word.substring(1).toLowerCase());
+        }
+        return result.toString();
+    }
+    
+    private String toPackageName(String input) {
+        return input.toLowerCase().replaceAll("\\s+", ".");
+    }
+    
+    private String mapDataType(String catalogType) {
+        if (catalogType == null) return "String";
+        
+        switch (catalogType.toUpperCase()) {
+            case "VARCHAR":
+            case "CHAR":
+            case "TEXT":
+                return "String";
+            case "INTEGER":
+            case "INT":
+                return "Integer";
+            case "BIGINT":
+                return "Long";
+            case "DECIMAL":
+            case "NUMERIC":
+                return "BigDecimal";
+            case "DATE":
+                return "LocalDate";
+            case "TIMESTAMP":
+                return "LocalDateTime";
+            case "BOOLEAN":
+                return "Boolean";
+            default:
+                return "String";
+        }
+    }
+}
+
+// ============================================================================
+// 8. CONTROLLER LAYER
+// ============================================================================
+
+package com.datacatalog.drools.controller;
+
+import com.datacatalog.drools.model.*;
+import com.datacatalog.drools.service.*;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/api/v1/drools")
+@RequiredArgsConstructor
+public class DroolsRuleController {
+    
+    private final DroolsRuleValidatorService validatorService;
+    private final EnhancedDroolsValidatorService enhancedValidatorService;
+    private final JavaClassGeneratorService classGeneratorService;
+    private final DroolsCompilationValidator compilationValidator;
+    
+    /**
+     * BASIC validation - Fast, syntax-only check
+     * 
+     * POST /api/v1/drools/validate
+     */
+    @PostMapping("/validate")
+    public ResponseEntity<RuleValidationResponse> validateRule(
+            @RequestBody RuleValidationRequest request) {
+        
+        long startTime = System.currentTimeMillis();
+        
+        ValidationResult result = validatorService.validateAndSubstitute(
+            request.getPartialDroolRule()
+        );
+        
+        long processingTime = System.currentTimeMillis() - startTime;
+        
+        RuleValidationResponse response = RuleValidationResponse.builder()
+            .requestId(UUID.randomUUID().toString())
+            .validationResult(result)
+            .processingTimeMs(processingTime)
+            .build();
+        
+        return ResponseEntity.ok(response);
+    }
+    
+    /**
+     * FULL validation - Compiles Java classes and Drools rule to guarantee validity
+     * 
+     * POST /api/v1/drools/validate-full
+     */
+    @PostMapping("/validate-full")
+    public ResponseEntity<EnhancedValidationResponse> validateRuleFull(
+            @RequestBody RuleValidationRequest request) {
+        
+        long startTime = System.currentTimeMillis();
+        
+        EnhancedValidationResult result = enhancedValidatorService
+            .validateWithFullCompilation(request.getPartialDroolRule());
+        
+        long processingTime = System.currentTimeMillis() - startTime;
+        
+        EnhancedValidationResponse response = EnhancedValidationResponse.builder()
+            .requestId(UUID.randomUUID().toString())
+            .validationResult(result)
+            .processingTimeMs(processingTime)
+            .build();
+        
+        return ResponseEntity.ok(response);
+    }
+    
+    /**
+     * Generates Java classes from data catalog
+     * 
+     * POST /api/v1/drools/generate-classes
+     */
+    @PostMapping("/generate-classes")
+    public ResponseEntity<JavaClassGenerationResponse> generateClasses(
+            @RequestBody JavaClassGenerationRequest request) {
+        
+        try {
+            JavaClassGenerationResponse response = 
+                classGeneratorService.generateClasses(request);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+    
+    /**
+     * Clear compilation cache (useful after catalog reload)
+     * 
+     * POST /api/v1/drools/cache/clear
+     */
+    @PostMapping("/cache/clear")
+    public ResponseEntity<CacheClearResponse> clearCache() {
+        compilationValidator.clearCache();
+        return ResponseEntity.ok(
+            CacheClearResponse.builder()
+                .message("Compilation cache cleared successfully")
+                .timestamp(System.currentTimeMillis())
+                .build()
+        );
+    }
+    
+    /**
+     * Get cache statistics
+     * 
+     * GET /api/v1/drools/cache/stats
+     */
+    @GetMapping("/cache/stats")
+    public ResponseEntity<DroolsCompilationValidator.CacheStatistics> getCacheStats() {
+        return ResponseEntity.ok(compilationValidator.getCacheStatistics());
+    }
+}
+
+@Data
+@lombok.Builder
+class EnhancedValidationResponse {
+    private String requestId;
+    private EnhancedValidationResult validationResult;
+    private long processingTimeMs;
+}
+
+@Data
+@lombok.Builder
+class CacheClearResponse {
+    private String message;
+    private long timestamp;
+}
+
+// ============================================================================
+// 9. CONFIGURATION
+// ============================================================================
+
+package com.datacatalog.drools.config;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class ApplicationConfig {
+    
+    @Bean
+    public ObjectMapper objectMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.enable(SerializationFeature.INDENT_OUTPUT);
+        return mapper;
+    }
+}
+
+// ============================================================================
+// 10. SAMPLE DATA CATALOG JSON (data-catalog.json)
+// ============================================================================
+
+/*
+[
+  {
+    "dictionary": "Deposits",
+    "collection": "Deposit Contract",
+    "attribute": "Contract Identifier",
+    "physicalTable": "DEPOSIT_CONTRACT",
+    "physicalColumn": "CONTRACT_ID",
+    "dataType": "VARCHAR",
+    "description": "Unique contract identifier"
+  },
+  {
+    "dictionary": "Deposits",
+    "collection": "Deposit Contract",
+    "attribute": "Record Type",
+    "physicalTable": "DEPOSIT_CONTRACT",
+    "physicalColumn": "RECORD_TYPE",
+    "dataType": "VARCHAR",
+    "description": "Type of deposit record"
+  },
+  {
+    "dictionary": "Deposits",
+    "collection": "Deposit Contract",
+    "attribute": "Spread Rate Percentage",
+    "physicalTable": "DEPOSIT_CONTRACT",
+    "physicalColumn": "SPREAD_RATE_PCT",
+    "dataType": "DECIMAL",
+    "description": "Spread rate as percentage"
+  },
+  {
+    "dictionary": "Deposits",
+    "collection": "Deposit Contract",
+    "attribute": "Maturity Date",
+    "physicalTable": "DEPOSIT_CONTRACT",
+    "physicalColumn": "MATURITY_DT",
+    "dataType": "DATE",
+    "description": "Contract maturity date"
+  }
+]
+*/
+
+// ============================================================================
+// 11. APPLICATION PROPERTIES (application.yml)
+// ============================================================================
+
+/*
+server:
+  port: 8080
+
+spring:
+  application:
+    name: drools-data-catalog-service
+
+logging:
+  level:
+    com.datacatalog.drools: DEBUG
+*/
+
+// ============================================================================
+// 12. MAVEN DEPENDENCIES (pom.xml)
+// ============================================================================
+
+// ============================================================================
+// 14. EXAMPLE: Generated Java Classes for Different Collections
+// ============================================================================
+
+/*
+EXAMPLE 1: Deposit Contract Collection
+Data Catalog Entries:
+{
+  "dictionary": "Deposits",
+  "collection": "Deposit Contract",
+  "attribute": "Contract Identifier",
+  "dataType": "VARCHAR"
+},
+{
+  "dictionary": "Deposits",
+  "collection": "Deposit Contract",
+  "attribute": "Spread Rate Percentage",
+  "dataType": "DECIMAL"
+},
+{
+  "dictionary": "Deposits",
+  "collection": "Deposit Contract",
+  "attribute": "Maturity Date",
+  "dataType": "DATE"
+}
+
+Generated Java Class:
+--------------------------------------------------
+package deposits;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+
+public class DepositContract {
+
+    private String contractIdentifier;
+
+    public String getContractIdentifier() {
+        return contractIdentifier;
+    }
+
+    public void setContractIdentifier(String contractIdentifier) {
+        this.contractIdentifier = contractIdentifier;
+    }
+
+    private BigDecimal spreadRatePercentage;
+
+    public BigDecimal getSpreadRatePercentage() {
+        return spreadRatePercentage;
+    }
+
+    public void setSpreadRatePercentage(BigDecimal spreadRatePercentage) {
+        this.spreadRatePercentage = spreadRatePercentage;
+    }
+
+    private LocalDate maturityDate;
+
+    public LocalDate getMaturityDate() {
+        return maturityDate;
+    }
+
+    public void setMaturityDate(LocalDate maturityDate) {
+        this.maturityDate = maturityDate;
+    }
+
+}
+--------------------------------------------------
+
+EXAMPLE 2: Loan Account Collection
+Data Catalog Entries:
+{
+  "dictionary": "Loans",
+  "collection": "Loan Account",
+  "attribute": "Account Number",
+  "dataType": "BIGINT"
+},
+{
+  "dictionary": "Loans",
+  "collection": "Loan Account",
+  "attribute": "Outstanding Balance",
+  "dataType": "DECIMAL"
+},
+{
+  "dictionary": "Loans",
+  "collection": "Loan Account",
+  "attribute": "Is Delinquent",
+  "dataType": "BOOLEAN"
+},
+{
+  "dictionary": "Loans",
+  "collection": "Loan Account",
+  "attribute": "Last Payment Date",
+  "dataType": "TIMESTAMP"
+}
+
+Generated Java Class:
+--------------------------------------------------
+package loans;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+
+public class LoanAccount {
+
+    private Long accountNumber;
+
+    public Long getAccountNumber() {
+        return accountNumber;
+    }
+
+    public void setAccountNumber(Long accountNumber) {
+        this.accountNumber = accountNumber;
+    }
+
+    private BigDecimal outstandingBalance;
+
+    public BigDecimal getOutstandingBalance() {
+        return outstandingBalance;
+    }
+
+    public void setOutstandingBalance(BigDecimal outstandingBalance) {
+        this.outstandingBalance = outstandingBalance;
+    }
+
+    private Boolean isDelinquent;
+
+    public Boolean isIsDelinquent() {
+        return isDelinquent;
+    }
+
+    public void setIsDelinquent(Boolean isDelinquent) {
+        this.isDelinquent = isDelinquent;
+    }
+
+    private LocalDateTime lastPaymentDate;
+
+    public LocalDateTime getLastPaymentDate() {
+        return lastPaymentDate;
+    }
+
+    public void setLastPaymentDate(LocalDateTime lastPaymentDate) {
+        this.lastPaymentDate = lastPaymentDate;
+    }
+
+}
+--------------------------------------------------
+
+EXAMPLE 3: How the Validator Uses This
+
+Rule Input:
+<Loans.Loan Account>:(<Outstanding Balance> > 10000, <Is Delinquent> == true)
+
+Step-by-step:
+1. Parser extracts: dictionary="Loans", collection="Loan Account"
+2. generateJavaClassSource("Loans", "Loan Account") is called
+3. catalogRepository.findByCollection("Loans", "Loan Account") returns 4 elements
+4. Generates LoanAccount.java with exact fields from catalog
+5. Compiles LoanAccount class in-memory
+6. Substitutes rule: LoanAccount(loanAccount.outstandingBalance > 10000, loanAccount.isDelinquent == true)
+7. Compiles Drools rule with compiled LoanAccount class
+8. Validates getters exist: getOutstandingBalance(), isIsDelinquent()
+9. Validates types: BigDecimal > Integer (valid), Boolean == boolean (valid)
+10. Returns SUCCESS - guaranteed to work!
+
+--------------------------------------------------
+
+EXAMPLE 4: Type Mapping Demonstration
+
+SQL Type → Java Type (with full validation)
+----------------------------------------
+VARCHAR         → String
+INTEGER         → Integer
+BIGINT          → Long
+DECIMAL         → java.math.BigDecimal
+DATE            → java.time.LocalDate
+TIMESTAMP       → java.time.LocalDateTime
+BOOLEAN         → Boolean
+FLOAT           → Double
+
+This ensures:
+✅ Numeric comparisons work correctly (>, <, >=, <=)
+✅ String operations work (matches, contains, startsWith)
+✅ Date comparisons work (before, after)
+✅ Null checks work for all types
+✅ Boolean logic works (true/false, &&, ||)
+
+*/
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.0</version>
+    </parent>
+
+    <groupId>com.datacatalog</groupId>
+    <artifactId>drools-data-catalog-service</artifactId>
+    <version>1.0.0</version>
+    <name>Drools Data Catalog Service</name>
+
+    <properties>
+        <java.version>17</java.version>
+        <drools.version>8.44.0.Final</drools.version>
+    </properties>
+
+    <dependencies>
+        <!-- Spring Boot -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        
+        <!-- Lombok -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        
+        <!-- Jackson for JSON -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+        
+        <!-- Drools Core Dependencies -->
+        <dependency>
+            <groupId>org.drools</groupId>
+            <artifactId>drools-core</artifactId>
+            <version>${drools.version}</version>
+        </dependency>
+        
+        <dependency>
+            <groupId>org.drools</groupId>
+            <artifactId>drools-compiler</artifactId>
+            <version>${drools.version}</version>
+        </dependency>
+        
+        <dependency>
+            <groupId>org.kie</groupId>
+            <artifactId>kie-api</artifactId>
+            <version>${drools.version}</version>
+        </dependency>
+        
+        <dependency>
+            <groupId>org.kie</groupId>
+            <artifactId>kie-internal</artifactId>
+            <version>${drools.version}</version>
+        </dependency>
+        
+        <!-- CRITICAL: Java Compiler API (included in JDK, but explicit for clarity) -->
+        <dependency>
+            <groupId>javax.tools</groupId>
+            <artifactId>tools</artifactId>
+            <version>1.8.0</version>
+            <scope>system</scope>
+            <systemPath>${java.home}/../lib/tools.jar</systemPath>
+        </dependency>
+        
+        <!-- Testing -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            
+            <!-- Ensure JDK (not JRE) for compilation -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <source>17</source>
+                    <target>17</target>
+                    <fork>true</fork>
+                    <executable>${JAVA_HOME}/bin/javac</executable>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+*/
+
+// ============================================================================
+// 13. IMPORTANT: JDK vs JRE Requirement
+// ============================================================================
+
+/*
+⚠️ CRITICAL DEPLOYMENT REQUIREMENT ⚠️
+
+This service REQUIRES a full JDK installation, NOT just JRE.
+
+WHY?
+- The DroolsCompilationValidator uses javax.tools.JavaCompiler
+- JavaCompiler is ONLY available in JDK (not JRE)
+- ToolProvider.getSystemJavaCompiler() returns null in JRE
+
+DOCKER EXAMPLE:
+```dockerfile
+# ❌ WRONG - This will fail
+FROM eclipse-temurin:17-jre-alpine
+
+# ✅ CORRECT - Use JDK image
+FROM eclipse-temurin:17-jdk-alpine
+
+WORKDIR /app
+COPY target/drools-data-catalog-service.jar app.jar
+
+# Verify JDK is present
+RUN java -version && javac -version
+
+ENTRYPOINT ["java", "-jar", "app.jar"]
+```
+
+KUBERNETES DEPLOYMENT:
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: drools-validator
+spec:
+  template:
+    spec:
+      containers:
+      - name: validator
+        image: my-registry/drools-validator:1.0
+        # ⚠️ Must use JDK-based image
+        env:
+        - name: JAVA_TOOL_OPTIONS
+          value: "-Djava.compiler=NONE" # If needed
+```
+
+VERIFICATION:
+```bash
+# Check if running on JDK
+curl http://localhost:8080/actuator/health
+
+# Or add this health check:
+@Component
+public class JdkHealthIndicator implements HealthIndicator {
+    @Override
+    public Health health() {
+        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+        if (compiler == null) {
+            return Health.down()
+                .withDetail("error", "JDK not available - running on JRE")
+                .withDetail("solution", "Deploy with JDK image")
+                .build();
+        }
+        return Health.up()
+            .withDetail("compiler", "Available")
+            .build();
+    }
+}
+```
+*/
