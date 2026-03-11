@@ -1,0 +1,78 @@
+Free Text Rule
+     ↓
+Text Normalization
+     ↓
+Synonym Replacement
+     ↓
+Token Extraction
+     ↓
+Rule Signature Generation
+     ↓
+Hash Duplicate Check
+     ↓
+Cosine Similarity Check
+
+1. Normalize the Rule Text (Most Important Step)
+
+Different users write the same rule differently:
+
+Produce error if CustomerName is null and length > 20
+CustomerName must not be null and length greater than 20
+Raise error when CustomerName missing and length exceeds 20
+
+Normalize them using rule standardization.
+
+Steps
+	1.	Convert to lowercase
+	2.	Remove filler words
+	3.	Standardize operators
+	4.	Standardize rule keywords
+
+Example transformation:
+Produce error if CustomerName is null and length > 20
+Normalize:
+customername null length > 20
+2. Replace Synonyms Using Dictionary
+
+Create a rule synonym dictionary.
+examples:
+Words
+Normalized
+missing
+null
+empty
+null
+blank
+null
+greater than
+>
+exceeds
+>
+less than
+<
+should produce error
+error
+raise error
+error
+Example transformation:
+customername missing and length exceeds 20
+to
+customername null length > 20
+
+
+Extract Key Rule Tokens
+
+Extract structured tokens using regex.
+customername null length > 20
+extract:
+
+dataElement = customername
+conditions:
+   null_check
+   length > 20
+action = error
+
+Create Canonical Rule Signature
+
+Convert tokens into a deterministic signature.
+customername|null|length>20|error
