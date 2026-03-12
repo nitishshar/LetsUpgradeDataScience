@@ -1,0 +1,49 @@
+# User Story: Similarity Check for Duplicate Rule Detection
+
+-----
+
+**US-001: Warn user of similar existing rules before creating a new rule**
+
+**As a** data governance user,  
+**I want to** be warned when a rule I am writing for a data element is similar to an existing rule,  
+**So that** I do not create duplicate rules, even if I phrase them differently from the original.
+
+-----
+
+## Acceptance Criteria
+
+```gherkin
+Feature: Similarity check against existing rules for a data element
+
+  Background:
+    Given the rule catalogue contains the following rules for the "Customer Email" data element:
+      | id     | rule                                                   |
+      | DQ-001 | Customer email address must not be null                |
+      | DQ-002 | Email is required for every customer record            |
+
+  Scenario: User writes a rule that is semantically similar to an existing rule
+    When the user enters the rule "The email field for a customer cannot be empty"
+    Then the system checks the new rule against existing rules for "Customer Email"
+    And returns a warning "A similar rule already exists"
+    And displays the matching rule [DQ-001] with its similarity score
+    And prevents the rule from being saved without user acknowledgement
+
+  Scenario: User writes a rule that is not similar to any existing rule
+    When the user enters the rule "Customer email domain must be from an approved list"
+    Then the system checks the new rule against existing rules for "Customer Email"
+    And no similar rules are found
+    And the rule is saved successfully
+
+  Scenario: User acknowledges the warning and chooses to save anyway
+    When the user enters the rule "The email field for a customer cannot be empty"
+    And the system warns that [DQ-001] is similar
+    And the user confirms they want to save the rule despite the warning
+    Then the rule is saved with a note that a similar rule exists
+
+  Scenario: User acknowledges the warning and cancels the save
+    When the user enters the rule "The email field for a customer cannot be empty"
+    And the system warns that [DQ-001] is similar
+    And the user cancels the save
+    Then no new rule is created
+    And the user is returned to the rule creation screen
+```
