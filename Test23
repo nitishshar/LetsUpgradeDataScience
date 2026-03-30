@@ -158,6 +158,9 @@ Example 3 – Multiple dimensions (numbered list – should be split instead):
 "1. Derivative Exercise Start Date must not be blank or null
 2. Derivative Exercise Start Date must be in a valid date format (e.g. YYYY-MM-DD, MM/DD/
 YYYY, YYYYMMDD)"
+❌ "Customer Address must not be blank"
+✅ "Produce error if Customer Address is blank or null"
+
 
 ---
 
@@ -166,6 +169,9 @@ IMPORTANT:
 - Do NOT include phrases like "The rule ensures that..." or "This ensures..."
 - Be specific and unambiguous
 - Preserve all passing checkpoint requirements
+- If the original rule begins with "Produce error if", "Flag if", "Fail if", or any 
+  similar error-trigger prefix, PRESERVE that exact prefix in the improved rule — 
+  do NOT rewrite it as a positive constraint statement
 - Fix all failed checkpoint issues
 - NEVER expand the rule scope beyond the original rule's intent
 - NEVER derive new requirements from the CDE definition when a valid rule exists
