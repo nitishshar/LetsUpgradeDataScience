@@ -1,0 +1,915 @@
+# Devin Playbook: Angular E2E Testing with BDD + Playwright
+
+**Playbook ID:** `angular-e2e-bdd-playwright`  
+**Version:** 1.0  
+**Target:** Devin AI  
+**Stack:** Angular + Playwright + Cucumber/Gherkin BDD
+
+-----
+
+## 🎯 Mission
+
+Generate comprehensive, maintainable end-to-end tests for a given Angular module using BDD Gherkin syntax backed by Playwright. This playbook walks you through codebase analysis, test scaffolding, execution, and raising a PR with attached results — autonomously.
+
+-----
+
+## 📋 Prerequisites Checklist
+
+Before starting, verify:
+
+- [ ] Angular project is identified and accessible
+- [ ] Target module name is provided by user (e.g., `auth`, `dashboard`, `user-management`)
+- [ ] Node.js >= 18 is available
+- [ ] The app can be served locally (`ng serve`) or a base URL is provided
+- [ ] Git remote and GitHub/GitLab access is configured for PR creation
+
+**If any prerequisite is missing → STOP and ask the user before proceeding.**
+
+-----
+
+## 📁 Output File Structure
+
+Create this structure under `e2e/` in the project root:
+
+```
+e2e/
+├── features/
+│   └── <module>/
+│       └── <module>.feature          # Gherkin BDD scenarios (editable by user)
+├── step-definitions/
+│   └── <module>/
+│       └── <module>.steps.ts         # Cucumber step bindings
+├── pages/
+│   └── <module>/
+│       └── <module>.page.ts          # Page Object for the module
+├── helpers/
+│   ├── base.page.ts                  # Base Page Object (shared)
+│   ├── api.helper.ts                 # API/HTTP utilities
+│   ├── auth.helper.ts                # Login/auth flows
+│   ├── wait.helper.ts                # Smart wait utilities
+│   ├── form.helper.ts                # Form interaction utilities
+│   ├── table.helper.ts               # Table/grid utilities
+│   ├── modal.helper.ts               # Dialog/modal utilities
+│   ├── assert.helper.ts              # Custom assertion wrappers
+│   └── test-data.factory.ts          # Test data generation
+├── fixtures/
+│   └── <module>.fixtures.ts          # Playwright fixtures
+├── support/
+│   ├── world.ts                      # Cucumber world context
+│   └── hooks.ts                      # Before/After hooks
+├── reports/                          # Auto-generated test results
+│   ├── html/
+│   ├── screenshots/
+│   └── videos/
+├── cucumber.config.ts
+└── playwright.config.ts
+```
+
+-----
+
+## 🔍 Phase 1: Codebase Analysis
+
+### Step 1.1 — Locate the Target Module
+
+```bash
+# Find the module directory
+find src/app -type d -name "<MODULE_NAME>"
+ls src/app/<module>/
+```
+
+### Step 1.2 — Extract All Components
+
+```bash
+find src/app/<module> -name "*.component.ts" | sort
+```
+
+For each component, read and extract:
+
+- **Selector** (`selector: 'app-...'`)
+- **Template bindings** (`[(ngModel)]`, `(click)`, `*ngIf`, `*ngFor`, `[routerLink]`)
+- **@Input / @Output** properties
+- **Injected services**
+
+### Step 1.3 — Extract All Services
+
+```bash
+find src/app/<module> -name "*.service.ts" | sort
+```
+
+For each service, extract:
+
+- **Public methods** and their signatures
+- **HTTP calls** (`GET`, `POST`, `PUT`, `DELETE`) and endpoints
+- **Observables / Subjects** that components subscribe to
+
+### Step 1.4 — Extract Routes
+
+```bash
+find src/app/<module> -name "*.routing.ts" -o -name "*.routes.ts" | sort
+cat src/app/app-routing.module.ts
+```
+
+Map all routes including:
+
+- Path → Component mapping
+- Guard-protected routes (note auth requirements)
+- Lazy-loaded child routes
+
+### Step 1.5 — Extract Models / Interfaces
+
+```bash
+find src/app/<module> -name "*.model.ts" -o -name "*.interface.ts" | sort
+```
+
+Use model field names for test data factory generation.
+
+### Step 1.6 — Extract Forms
+
+In each component template or class, identify:
+
+- `FormBuilder` / `FormGroup` / `FormControl` usage
+- Validators applied (`Validators.required`, `Validators.email`, etc.)
+- Form submission method
+
+### Step 1.7 — Check Existing Test Setup
+
+```bash
+ls e2e/ 2>/dev/null || echo "No e2e directory yet"
+cat package.json | grep -E "playwright|cucumber|@cucumber"
+```
+
+-----
+
+## 🧪 Phase 2: Scenario Generation
+
+### Step 2.1 — Scenario Coverage Rules
+
+For EVERY component discovered, generate Gherkin scenarios covering:
+
+|Category                |Must Cover                                      |
+|------------------------|------------------------------------------------|
+|**Navigation**          |Route loads, URL is correct, page title visible |
+|**Initial State**       |Default content rendered, loading states        |
+|**Happy Path**          |Primary user workflow succeeds end-to-end       |
+|**Form Validation**     |Required fields, invalid input, error messages  |
+|**Form Submission**     |Success response, failure/error response        |
+|**CRUD Operations**     |Create, Read, Update, Delete if applicable      |
+|**Permissions**         |Auth-guarded routes reject unauthenticated users|
+|**Empty State**         |No data scenario renders correctly              |
+|**Pagination/Filtering**|Tables with sorting, filtering, paging          |
+|**Modals/Dialogs**      |Open, confirm, cancel, close on success         |
+|**Negative Cases**      |Server errors (500), not found (404)            |
+|**Accessibility**       |Keyboard navigation, ARIA labels present        |
+
+### Step 2.2 — Feature File Format
+
+```gherkin
+# e2e/features/<module>/<module>.feature
+# ⚠️ USER NOTE: You may add new scenarios below any existing ones.
+# Follow the same Given/When/Then pattern. Tags are optional.
+# Do NOT modify step text that already has a step definition.
+
+@<module>
+Feature: <Module Display Name>
+  As a [user role]
+  I want to [action]
+  So that [business value]
+
+  Background:
+    Given the user is authenticated
+    And the user navigates to "/<route>"
+
+  # ──────────────────────────────────────────
+  # HAPPY PATH
+  # ──────────────────────────────────────────
+
+  @smoke @happy-path
+  Scenario: Page loads with correct title
+    Then the page title should be "<Title>"
+    And the "<module>-container" element should be visible
+
+  @happy-path
+  Scenario: User successfully creates a <entity>
+    When the user clicks the "Add <Entity>" button
+    And the user fills in the "<entity>" form with valid data
+    And the user submits the form
+    Then a success notification should appear
+    And the new <entity> should appear in the list
+
+  # ──────────────────────────────────────────
+  # VALIDATION
+  # ──────────────────────────────────────────
+
+  @validation
+  Scenario: Required fields show errors on empty submit
+    When the user clicks the "Add <Entity>" button
+    And the user submits the form without filling required fields
+    Then validation error messages should be visible for required fields
+
+  @validation
+  Scenario Outline: Field-level validation for <field>
+    When the user enters "<value>" into the "<field>" field
+    And the user blurs the field
+    Then the error "<error>" should appear
+
+    Examples:
+      | field  | value          | error                        |
+      | email  | notanemail     | Please enter a valid email   |
+      | phone  | abc            | Phone must be numeric        |
+
+  # ──────────────────────────────────────────
+  # ERROR HANDLING
+  # ──────────────────────────────────────────
+
+  @error-handling
+  Scenario: Server error shows user-friendly message
+    Given the API returns a 500 error for "<endpoint>"
+    When the user performs the primary action
+    Then an error message should be displayed
+    And the user should remain on the current page
+
+  # ──────────────────────────────────────────
+  # AUTH & PERMISSIONS
+  # ──────────────────────────────────────────
+
+  @auth
+  Scenario: Unauthenticated user is redirected to login
+    Given the user is not authenticated
+    When the user navigates to "/<protected-route>"
+    Then the user should be redirected to "/login"
+
+  # ──────────────────────────────────────────
+  # ✏️ USER-ADDED SCENARIOS (add below this line)
+  # ──────────────────────────────────────────
+```
+
+-----
+
+## 🏗️ Phase 3: Code Generation
+
+### Step 3.1 — Install Dependencies
+
+```bash
+npm install --save-dev \
+  @playwright/test \
+  @cucumber/cucumber \
+  @badeball/cypress-cucumber-preprocessor \
+  playwright-bdd \
+  @faker-js/faker \
+  allure-playwright \
+  ts-node \
+  typescript
+  
+npx playwright install --with-deps chromium firefox
+```
+
+### Step 3.2 — Generate `playwright.config.ts`
+
+```typescript
+// e2e/playwright.config.ts
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './e2e',
+  fullyParallel: false,
+  forbidOnly: !!process.env.CI,
+  retries: process.env.CI ? 2 : 0,
+  workers: process.env.CI ? 2 : 1,
+  reporter: [
+    ['html', { outputFolder: 'e2e/reports/html', open: 'never' }],
+    ['json', { outputFile: 'e2e/reports/results.json' }],
+    ['line'],
+  ],
+  use: {
+    baseURL: process.env.APP_URL || 'http://localhost:4200',
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
+    trace: 'on-first-retry',
+    actionTimeout: 10_000,
+    navigationTimeout: 30_000,
+  },
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+  ],
+  webServer: {
+    command: 'ng serve --port 4200',
+    url: 'http://localhost:4200',
+    reuseExistingServer: !process.env.CI,
+    timeout: 120_000,
+  },
+});
+```
+
+### Step 3.3 — Generate `cucumber.config.ts`
+
+```typescript
+// e2e/cucumber.config.ts
+export default {
+  default: {
+    paths: ['e2e/features/**/*.feature'],
+    require: [
+      'e2e/support/world.ts',
+      'e2e/support/hooks.ts',
+      'e2e/step-definitions/**/*.steps.ts',
+    ],
+    requireModule: ['ts-node/register'],
+    format: [
+      'progress-bar',
+      'html:e2e/reports/cucumber-report.html',
+      'json:e2e/reports/cucumber-results.json',
+    ],
+    formatOptions: { snippetInterface: 'async-await' },
+    publishQuiet: true,
+  },
+};
+```
+
+### Step 3.4 — Generate Helper: `base.page.ts`
+
+```typescript
+// e2e/helpers/base.page.ts
+import { Page, Locator, expect } from '@playwright/test';
+
+export abstract class BasePage {
+  constructor(protected page: Page) {}
+
+  /** Navigate to a path relative to baseURL */
+  async navigateTo(path: string): Promise<void> {
+    await this.page.goto(path);
+    await this.page.waitForLoadState('networkidle');
+  }
+
+  /** Get element by data-testid attribute (preferred selector strategy) */
+  byTestId(testId: string): Locator {
+    return this.page.locator(`[data-testid="${testId}"]`);
+  }
+
+  /** Get element by aria-label */
+  byAriaLabel(label: string): Locator {
+    return this.page.getByRole('button', { name: label });
+  }
+
+  /** Click with automatic wait for element to be stable */
+  async safeClick(locator: Locator): Promise<void> {
+    await locator.waitFor({ state: 'visible' });
+    await locator.scrollIntoViewIfNeeded();
+    await locator.click();
+  }
+
+  /** Fill input with clear-first safety */
+  async safeFill(locator: Locator, value: string): Promise<void> {
+    await locator.waitFor({ state: 'visible' });
+    await locator.clear();
+    await locator.fill(value);
+  }
+
+  /** Wait for Angular to stabilize (no pending HTTP or timers) */
+  async waitForAngular(): Promise<void> {
+    await this.page.waitForFunction(() => {
+      const el = document.querySelector('[ng-version]');
+      if (!el) return true;
+      // @ts-ignore
+      const testability = window.getAllAngularTestabilities?.();
+      return testability?.every((t: any) => t.isStable()) ?? true;
+    });
+  }
+
+  async assertVisible(locator: Locator, message?: string): Promise<void> {
+    await expect(locator, message).toBeVisible();
+  }
+
+  async assertText(locator: Locator, expected: string): Promise<void> {
+    await expect(locator).toHaveText(expected);
+  }
+
+  async assertURL(pattern: string | RegExp): Promise<void> {
+    await expect(this.page).toHaveURL(pattern);
+  }
+
+  async getPageTitle(): Promise<string> {
+    return this.page.title();
+  }
+
+  async takeScreenshot(name: string): Promise<void> {
+    await this.page.screenshot({
+      path: `e2e/reports/screenshots/${name}-${Date.now()}.png`,
+      fullPage: true,
+    });
+  }
+}
+```
+
+### Step 3.5 — Generate Helper: `wait.helper.ts`
+
+```typescript
+// e2e/helpers/wait.helper.ts
+import { Page } from '@playwright/test';
+
+export class WaitHelper {
+  constructor(private page: Page) {}
+
+  async waitForNetworkIdle(timeout = 5000): Promise<void> {
+    await this.page.waitForLoadState('networkidle', { timeout });
+  }
+
+  async waitForSpinnerToDisappear(spinnerSelector = '[data-testid="spinner"]'): Promise<void> {
+    const spinner = this.page.locator(spinnerSelector);
+    try {
+      await spinner.waitFor({ state: 'visible', timeout: 2000 });
+      await spinner.waitFor({ state: 'hidden', timeout: 15000 });
+    } catch {
+      // spinner may not appear for fast responses
+    }
+  }
+
+  async waitForToastToAppear(): Promise<string> {
+    const toast = this.page.locator('[data-testid="toast"], .toast, .snack-bar, mat-snack-bar-container');
+    await toast.waitFor({ state: 'visible', timeout: 5000 });
+    return toast.innerText();
+  }
+
+  async waitForAPIResponse(urlPattern: string | RegExp): Promise<any> {
+    const response = await this.page.waitForResponse(urlPattern);
+    return response.json();
+  }
+
+  async waitForRouteChange(expectedPath: string): Promise<void> {
+    await this.page.waitForURL(`**${expectedPath}**`);
+  }
+}
+```
+
+### Step 3.6 — Generate Helper: `form.helper.ts`
+
+```typescript
+// e2e/helpers/form.helper.ts
+import { Page, Locator } from '@playwright/test';
+import { BasePage } from './base.page';
+
+export class FormHelper {
+  constructor(private page: Page) {}
+
+  async fillInput(label: string, value: string): Promise<void> {
+    const input = this.page.getByLabel(label);
+    await input.clear();
+    await input.fill(value);
+    await input.blur();
+  }
+
+  async selectDropdown(label: string, optionText: string): Promise<void> {
+    const select = this.page.getByLabel(label);
+    await select.selectOption({ label: optionText });
+  }
+
+  async selectMatDropdown(label: string, optionText: string): Promise<void> {
+    await this.page.getByLabel(label).click();
+    await this.page.locator('mat-option').filter({ hasText: optionText }).click();
+  }
+
+  async checkCheckbox(label: string): Promise<void> {
+    const cb = this.page.getByLabel(label);
+    if (!(await cb.isChecked())) await cb.check();
+  }
+
+  async getValidationError(field: string): Promise<string> {
+    const errorEl = this.page.locator(`[data-testid="${field}-error"], mat-error`).first();
+    return errorEl.innerText();
+  }
+
+  async submitForm(buttonText = 'Submit'): Promise<void> {
+    await this.page.getByRole('button', { name: buttonText }).click();
+  }
+
+  async assertFieldIsRequired(label: string): Promise<void> {
+    const input = this.page.getByLabel(label);
+    await input.clear();
+    await input.blur();
+    const hasError = await this.page.locator('mat-error, .error-message').count();
+    if (hasError === 0) throw new Error(`No validation error shown for required field: ${label}`);
+  }
+}
+```
+
+### Step 3.7 — Generate Helper: `auth.helper.ts`
+
+```typescript
+// e2e/helpers/auth.helper.ts
+import { Page, BrowserContext } from '@playwright/test';
+
+export interface Credentials {
+  username: string;
+  password: string;
+}
+
+const DEFAULT_ADMIN: Credentials = {
+  username: process.env.TEST_USER || 'admin@test.com',
+  password: process.env.TEST_PASSWORD || 'TestPass123!',
+};
+
+export class AuthHelper {
+  constructor(private page: Page) {}
+
+  /** Full UI login flow */
+  async loginViaUI(creds: Credentials = DEFAULT_ADMIN): Promise<void> {
+    await this.page.goto('/login');
+    await this.page.getByLabel('Email').fill(creds.username);
+    await this.page.getByLabel('Password').fill(creds.password);
+    await this.page.getByRole('button', { name: 'Login' }).click();
+    await this.page.waitForURL(/dashboard|home/, { timeout: 10000 });
+  }
+
+  /** Fast API-based login — injects token to localStorage */
+  async loginViaAPI(creds: Credentials = DEFAULT_ADMIN): Promise<void> {
+    const response = await this.page.request.post('/api/auth/login', {
+      data: { email: creds.username, password: creds.password },
+    });
+    const { token } = await response.json();
+    await this.page.evaluate((t) => localStorage.setItem('auth_token', t), token);
+  }
+
+  async logout(): Promise<void> {
+    await this.page.evaluate(() => localStorage.clear());
+    await this.page.goto('/login');
+  }
+
+  async saveAuthState(context: BrowserContext, path = 'e2e/.auth/user.json'): Promise<void> {
+    await context.storageState({ path });
+  }
+}
+```
+
+### Step 3.8 — Generate Helper: `test-data.factory.ts`
+
+```typescript
+// e2e/helpers/test-data.factory.ts
+import { faker } from '@faker-js/faker';
+
+// ⚠️ Devin: Extend this factory with fields from the actual module's models.
+// Replace placeholder types with real model interfaces from the codebase.
+
+export class TestDataFactory {
+  static createUser(overrides = {}) {
+    return {
+      firstName: faker.person.firstName(),
+      lastName: faker.person.lastName(),
+      email: faker.internet.email(),
+      phone: faker.phone.number('##########'),
+      ...overrides,
+    };
+  }
+
+  static createAddress(overrides = {}) {
+    return {
+      street: faker.location.streetAddress(),
+      city: faker.location.city(),
+      state: faker.location.state(),
+      zip: faker.location.zipCode(),
+      ...overrides,
+    };
+  }
+
+  // Devin: Add a factory method per model discovered in Phase 1
+  // Example:
+  // static createProduct(overrides = {}) { ... }
+  // static createOrder(overrides = {}) { ... }
+
+  static randomId(): string {
+    return faker.string.uuid();
+  }
+
+  static pastDate(): string {
+    return faker.date.past().toISOString().split('T')[0];
+  }
+}
+```
+
+### Step 3.9 — Generate Helper: `api.helper.ts`
+
+```typescript
+// e2e/helpers/api.helper.ts
+import { Page, Route } from '@playwright/test';
+
+export class ApiHelper {
+  constructor(private page: Page) {}
+
+  /** Mock an API endpoint to return specific data */
+  async mockResponse(urlPattern: string | RegExp, body: any, status = 200): Promise<void> {
+    await this.page.route(urlPattern, (route: Route) => {
+      route.fulfill({
+        status,
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+      });
+    });
+  }
+
+  /** Mock a server error */
+  async mockError(urlPattern: string | RegExp, status = 500): Promise<void> {
+    await this.page.route(urlPattern, (route: Route) => {
+      route.fulfill({ status, body: 'Internal Server Error' });
+    });
+  }
+
+  /** Intercept and capture the request body */
+  async captureRequest(urlPattern: string | RegExp): Promise<any> {
+    return new Promise((resolve) => {
+      this.page.once('request', (req) => {
+        if (typeof urlPattern === 'string' ? req.url().includes(urlPattern) : urlPattern.test(req.url())) {
+          resolve(req.postDataJSON());
+        }
+      });
+    });
+  }
+
+  /** Unmock all routes */
+  async clearMocks(): Promise<void> {
+    await this.page.unrouteAll();
+  }
+}
+```
+
+### Step 3.10 — Generate Helper: `table.helper.ts`
+
+```typescript
+// e2e/helpers/table.helper.ts
+import { Page, Locator } from '@playwright/test';
+import { expect } from '@playwright/test';
+
+export class TableHelper {
+  private table: Locator;
+
+  constructor(private page: Page, tableSelector = '[data-testid="data-table"]') {
+    this.table = page.locator(tableSelector);
+  }
+
+  async getRowCount(): Promise<number> {
+    return this.table.locator('tbody tr').count();
+  }
+
+  async getCellText(row: number, col: number): Promise<string> {
+    return this.table.locator('tbody tr').nth(row).locator('td').nth(col).innerText();
+  }
+
+  async clickRowAction(rowIndex: number, actionText: string): Promise<void> {
+    const row = this.table.locator('tbody tr').nth(rowIndex);
+    await row.locator(`button, a`).filter({ hasText: actionText }).click();
+  }
+
+  async sortByColumn(columnHeader: string): Promise<void> {
+    await this.table.locator('th').filter({ hasText: columnHeader }).click();
+  }
+
+  async searchTable(searchText: string, searchSelector = '[data-testid="table-search"]'): Promise<void> {
+    await this.page.locator(searchSelector).fill(searchText);
+    await this.page.waitForTimeout(300); // debounce
+  }
+
+  async assertRowExists(cellText: string): Promise<void> {
+    await expect(this.table.locator('tbody td').filter({ hasText: cellText })).toBeVisible();
+  }
+
+  async assertRowCount(expectedCount: number): Promise<void> {
+    await expect(this.table.locator('tbody tr')).toHaveCount(expectedCount);
+  }
+}
+```
+
+### Step 3.11 — Generate `support/world.ts`
+
+```typescript
+// e2e/support/world.ts
+import { setWorldConstructor, World, IWorldOptions } from '@cucumber/cucumber';
+import { Browser, BrowserContext, Page, chromium } from '@playwright/test';
+import { AuthHelper } from '../helpers/auth.helper';
+import { WaitHelper } from '../helpers/wait.helper';
+import { FormHelper } from '../helpers/form.helper';
+import { ApiHelper } from '../helpers/api.helper';
+
+export class CustomWorld extends World {
+  browser!: Browser;
+  context!: BrowserContext;
+  page!: Page;
+
+  // Helpers (initialized in Before hook)
+  auth!: AuthHelper;
+  wait!: WaitHelper;
+  form!: FormHelper;
+  api!: ApiHelper;
+
+  // Shared test state
+  testData: Record<string, any> = {};
+  capturedResponse: any = null;
+
+  constructor(options: IWorldOptions) {
+    super(options);
+  }
+}
+
+setWorldConstructor(CustomWorld);
+```
+
+### Step 3.12 — Generate `support/hooks.ts`
+
+```typescript
+// e2e/support/hooks.ts
+import { Before, After, BeforeAll, AfterAll, Status } from '@cucumber/cucumber';
+import { chromium } from '@playwright/test';
+import { CustomWorld } from './world';
+import { AuthHelper } from '../helpers/auth.helper';
+import { WaitHelper } from '../helpers/wait.helper';
+import { FormHelper } from '../helpers/form.helper';
+import { ApiHelper } from '../helpers/api.helper';
+
+BeforeAll(async function () {
+  // Global setup if needed (seed DB, reset state, etc.)
+});
+
+Before(async function (this: CustomWorld) {
+  this.browser = await chromium.launch({ headless: process.env.HEADED !== 'true' });
+  this.context = await this.browser.newContext({
+    baseURL: process.env.APP_URL || 'http://localhost:4200',
+    recordVideo: { dir: 'e2e/reports/videos/' },
+  });
+  this.page = await this.context.newPage();
+
+  // Wire up helpers
+  this.auth = new AuthHelper(this.page);
+  this.wait = new WaitHelper(this.page);
+  this.form = new FormHelper(this.page);
+  this.api = new ApiHelper(this.page);
+});
+
+After(async function (this: CustomWorld, scenario) {
+  if (scenario.result?.status === Status.FAILED) {
+    const screenshot = await this.page.screenshot({ fullPage: true });
+    this.attach(screenshot, 'image/png');
+
+    const videoPath = await this.page.video()?.path();
+    if (videoPath) this.attach(`Video: ${videoPath}`, 'text/plain');
+  }
+
+  await this.page.close();
+  await this.context.close();
+  await this.browser.close();
+});
+
+AfterAll(async function () {
+  // Global teardown
+});
+```
+
+-----
+
+## ▶️ Phase 4: Execution
+
+### Step 4.1 — Run the Tests
+
+```bash
+# Start the Angular app if not running
+ng serve &
+sleep 15  # wait for app to boot
+
+# Run all BDD tests for the module
+npx cucumber-js --config e2e/cucumber.config.ts --tags "@<module>"
+
+# Or run Playwright directly
+npx playwright test e2e/ --project=chromium
+```
+
+### Step 4.2 — Capture Results
+
+```bash
+# Generate HTML report
+npx playwright show-report e2e/reports/html --host 0.0.0.0 &
+
+# Copy results summary to a markdown file for the PR
+node -e "
+const r = require('./e2e/reports/results.json');
+const pass = r.filter(s => s.status === 'passed').length;
+const fail = r.filter(s => s.status === 'failed').length;
+const total = r.length;
+const md = \`## E2E Test Results
+
+| Status | Count |
+|--------|-------|
+| ✅ Passed | \${pass} |
+| ❌ Failed | \${fail} |
+| 🔢 Total | \${total} |
+
+Run: \${new Date().toISOString()}
+\`;
+require('fs').writeFileSync('e2e/reports/RESULTS.md', md);
+console.log(md);
+"
+```
+
+-----
+
+## 🔀 Phase 5: Raise a Pull Request
+
+### Step 5.1 — Branch & Commit
+
+```bash
+BRANCH="feat/e2e-<module>-$(date +%Y%m%d)"
+git checkout -b "$BRANCH"
+git add e2e/
+git commit -m "feat(e2e): add BDD Playwright tests for <module> module
+
+- Gherkin scenarios covering happy path, validation, errors, auth
+- Page Object for <module> with all component interactions
+- Reusable helpers: auth, wait, form, api, table, modal, assert
+- Test data factory seeded from real model interfaces
+- HTML + JSON reports with screenshots on failure"
+git push origin "$BRANCH"
+```
+
+### Step 5.2 — Create PR via GitHub CLI
+
+```bash
+# Install gh if not present
+which gh || npm install -g @github/gh
+
+# Build PR body from results
+RESULTS=$(cat e2e/reports/RESULTS.md)
+SCREENSHOTS=$(ls e2e/reports/screenshots/*.png 2>/dev/null | head -5 | tr '\n' ' ')
+
+gh pr create \
+  --title "feat(e2e): BDD Playwright E2E Tests for <Module>" \
+  --body "$(cat <<EOF
+## 📋 Summary
+Adds comprehensive end-to-end tests for the **<Module>** module using Gherkin BDD + Playwright.
+
+## 🧪 What's Covered
+- Happy path: navigation, CRUD, form submission
+- Validation: required fields, field-level, cross-field
+- Error handling: API errors (500), not found (404)
+- Auth: unauthenticated redirects, role-based access
+- Accessibility: keyboard navigation, ARIA assertions
+
+## 🗂️ Files Added
+- \`e2e/features/<module>/<module>.feature\` — Editable Gherkin scenarios
+- \`e2e/step-definitions/<module>/<module>.steps.ts\`
+- \`e2e/pages/<module>/<module>.page.ts\`
+- \`e2e/helpers/\` — Shared utility classes
+
+## ✅ Test Results
+$RESULTS
+
+## 📸 Screenshots (failures only)
+$(for f in $SCREENSHOTS; do echo "![screenshot]($f)"; done)
+
+## 🚀 How to Run
+\`\`\`bash
+npx cucumber-js --config e2e/cucumber.config.ts --tags "@<module>"
+\`\`\`
+EOF
+)" \
+  --label "e2e,testing,automated" \
+  --assignee "@me"
+```
+
+-----
+
+## 🚦 Devin Decision Rules
+
+|Situation                       |Action                                                    |
+|--------------------------------|----------------------------------------------------------|
+|Module not found                |STOP → ask user for correct module name                   |
+|No routes found                 |Check `app-routing.module.ts` and all `*.routing.ts` files|
+|Angular Material detected       |Use `mat-*` selectors in helpers                          |
+|Auth interceptor found          |Add token injection to `auth.helper.ts`                   |
+|Existing `e2e/` folder          |Merge, don’t overwrite — append to `.feature` file        |
+|Tests fail on first run         |Retry once; if still failing, log details in PR body      |
+|`data-testid` attributes missing|Use `getByRole` and `getByLabel` as fallback              |
+|GitHub CLI not available        |Print PR URL and body to stdout for manual creation       |
+
+-----
+
+## 📌 Consistency Standards (Always Apply)
+
+- **Selectors priority:** `data-testid` > `aria-label` > `role` > `text` > CSS class
+- **Never** use `page.waitForTimeout()` as primary wait strategy — use explicit waits
+- **Always** clear fields before filling (`await input.clear()`)
+- **Always** wait for Angular to stabilize after navigation
+- **Always** use Page Objects — never raw selectors in step definitions
+- **Always** tag scenarios: `@smoke`, `@happy-path`, `@validation`, `@error-handling`, `@auth`
+- **Feature files are user-editable** — mark clearly with comments where users can add scenarios
+- **Step definitions must be generic enough** to be reused across scenarios
+
+-----
+
+## ✅ Definition of Done
+
+- [ ] All components in the module have at least one scenario
+- [ ] All form fields have validation scenarios
+- [ ] All HTTP endpoints are covered (happy + error paths)
+- [ ] Auth-guarded routes are tested
+- [ ] All helpers are in place with JSDoc comments
+- [ ] Tests pass in CI (chromium + firefox)
+- [ ] PR is raised with results table and screenshots attached
+- [ ] Feature file has user-editable comment markers
+
+-----
+
+*Playbook maintained by: AI Engineering | Stack: Angular + Playwright + Cucumber BDD*
