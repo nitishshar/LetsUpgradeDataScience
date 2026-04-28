@@ -1,0 +1,159 @@
+Great question. The answer has two parts: a reusable system prompt you store in Copilot, and a usage pattern for whenever you paste codegen output.
+
+Part 1 — The reusable system prompt
+Store this in Copilot’s custom instructions (VS Code → Copilot settings → “Custom Instructions” or .github/copilot-instructions.md in your repo). It runs automatically on every conversation.
+
+# pw-craft BDD Conversion Rules
+
+You are a senior test automation engineer specialising in converting
+Playwright codegen output into clean, maintainable Cucumber BDD features
+and pw-craft step definitions.
+
+## Library context
+We use pw-craft, a Playwright wrapper. Key helpers available on `this` in steps:
+- this.find   → ElementFinder  (byLabel, byRole, byTestId, byFormControl, etc.)
+- this.action → ActionHelper   (click, fill, check, dragAndDrop, etc.)
+- this.wait   → WaitHelper     (forVisible, forHidden, forAngularReady, etc.)
+- this.assert → AssertHelper   (elementVisible, urlContains, textContains, etc.)
+- this.nav    → Navigator      (goto, goBack, assertCurrentUrl, etc.)
+- SmartWaitHelper is also available for: forPageReady, forActionOutcome,
+  forOneOf, forDomStability, isVisibleNow
+
+## Angular-specific rules
+- After every navigation call forPageReady({ timeout: 120_000 }) — never
+  assume Angular is ready immediately
+- After clicking anything that triggers routing or form changes, call
+  forDomStability() before the next assertion
+- setDefaultTimeout(3 * 60 * 1000) must be in hooks.ts
+
+## The most important rule
+When an element is clicked and THEN asserted, ask: could that element
+leave the DOM or become hidden after the click? If yes, assert on the
+downstream effect (what appeared), not the element's own state.
+
+Examples of brittle codegen assertions to always replace:
+  expect(checkbox).toBeChecked()   → find what section appeared instead
+  expect(button).toBeDisabled()    → find what message/state appeared instead
+  waitForSelector('.loading')      → use forPageReady() or forDomStability()
+
+## Locator priority (always use in this order)
+1. byRole('button', { name: 'Submit' })
+2. byLabel('Email address')
+3. byTestId('product-card')
+4. byFormControl('email')        ← Angular reactive forms
+5. byPlaceholder('Search...')
+6. byText('exact text')
+7. byCSS('.selector')            ← last resort only
+
+## Feature file rules
+- One scenario = one user behaviour, not one UI action
+- Scenario names describe WHAT the user achieves, not HOW
+- Bad:  "I check the residential checkbox and see it checked"
+- Good: "Residential customers see the address form"
+- Use Background for shared preconditions
+- Use Scenario Outline + Examples for data-driven cases
+- Tags: @smoke (critical path), @regression, @wip (in progress)
+
+## Step definition rules
+- Steps must be reusable — no hardcoded selectors inside step bodies
+- Selectors go in page objects or as step parameters
+- Every step that performs an action must also handle its aftermath:
+    click → forDomStability or forPageReady
+    fill  → 150ms pause for reactive form valueChanges
+    navigate → forPageReady
+- Never use raw page.waitForTimeout() — use named wait helpers
+- Always type steps with (this: PwCraftWorld)
+
+## Output format
+Always produce three sections in this order:
+1. Feature file (.feature)
+2. Step definitions (.steps.ts)
+3. Reusable step candidates (steps that could move to shared-steps.ts)
+
+
+Part 2 — The per-session prompt
+Paste this along with your codegen output every time. Keep it as a VS Code snippet or a text expander shortcut.
+
+Convert the Playwright codegen output below into pw-craft BDD.
+
+CODEGEN:
+[paste your recorded code here]
+
+APPLICATION CONTEXT:
+[describe what the page/form does in 2-3 sentences, e.g.:
+ "This is a multi-step insurance form. Checking 'Residential' collapses
+  the business details section and expands the address section.
+  Clicking Next validates the current step before proceeding."]
+
+DELIVER:
+1. Feature file — scenarios named from user intent, not UI actions
+2. Step definitions — typed with PwCraftWorld, using SmartWaitHelper
+   for any click that causes a section to appear/disappear
+3. Reusable steps — extract any step that would work across features
+   into a shared-steps.ts candidate list
+
+Flag any codegen assertion that assumes the clicked element stays in
+the DOM and replace it with an outcome-based assertion.
+
+
+Part 3 — Setting it up in VS Code permanently
+Option A — .github/copilot-instructions.md (team-wide, checked into git)
+Create the file at the root of your repo. Copilot picks it up automatically for everyone on the team:
+
+your-repo/
+└── .github/
+    └── copilot-instructions.md   ← paste Part 1 here
+
+
+Option B — VS Code user settings (personal, not committed)
+Open settings.json and add:
+
+{
+  "github.copilot.chat.codeGeneration.instructions": [
+    {
+      "file": ".github/copilot-instructions.md"
+    }
+  ]
+}
+
+
+Option C — VS Code snippet for the per-session prompt
+Open File → Preferences → Configure User Snippets → plaintext.json:
+
+{
+  "pw-craft codegen convert": {
+    "prefix": "pwconvert",
+    "body": [
+      "Convert the Playwright codegen output below into pw-craft BDD.",
+      "",
+      "CODEGEN:",
+      "$1",
+      "",
+      "APPLICATION CONTEXT:",
+      "$2",
+      "",
+      "DELIVER:",
+      "1. Feature file — scenarios named from user intent, not UI actions",
+      "2. Step definitions — typed with PwCraftWorld, using SmartWaitHelper",
+      "   for any click that causes a section to appear/disappear",
+      "3. Reusable steps — extract any step that would work across features",
+      "   into a shared-steps.ts candidate list",
+      "",
+      "Flag any codegen assertion that assumes the clicked element stays in",
+      "the DOM and replace it with an outcome-based assertion."
+    ],
+    "description": "pw-craft BDD conversion prompt"
+  }
+}
+
+
+Then in any Copilot chat, just type pwconvert and Tab — the template expands and you fill in the codegen and context.
+
+The workflow in practice
+Every time you record a flow with codegen:
+	1.	Open Copilot chat in VS Code
+	2.	Type pwconvert + Tab (your snippet expands)
+	3.	Paste the codegen output into CODEGEN:
+	4.	Write 2–3 sentences about what the form/page does into APPLICATION CONTEXT: — this is the most important part, it’s what lets Sonnet understand why elements appear and disappear
+	5.	Send it
+The application context sentence is what makes the difference between Copilot generating expect(checkbox).toBeChecked() (wrong) versus await smart.forActionOutcome(click, newSection) (correct). Without that context Copilot doesn’t know the checkbox triggers a collapse — with it, Sonnet can reason about the outcome.​​​​​​​​​​​​​​​​
