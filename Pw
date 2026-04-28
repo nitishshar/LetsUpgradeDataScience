@@ -1,3 +1,20 @@
+Convert the Playwright codegen output below into pw-craft BDD.
+
+CODEGEN:
+[PASTE CODEGEN HERE]
+
+APPLICATION CONTEXT:
+[DESCRIBE APP CONTEXT HERE]
+
+DELIVER:
+1. Feature file — scenarios named from user intent, not UI actions
+2. Step definitions — typed with PwCraftWorld, using SmartWaitHelper
+   for any click that causes a section to appear/disappear
+3. Reusable steps — extract any step that would work across features
+   into a shared-steps.ts candidate list
+
+Flag any codegen assertion that assumes the clicked element stays in
+the DOM and replace it with an outcome-based assertion.
 Great question. The answer has two parts: a reusable system prompt you store in Copilot, and a usage pattern for whenever you paste codegen output.
 
 Part 1 — The reusable system prompt
