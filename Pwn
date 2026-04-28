@@ -1,0 +1,608 @@
+import { Page, Locator } from '@playwright/test';
+import { Logger } from './logger';
+
+/**
+ * SmartWaitHelper — drop-in replacement for WaitHelper's Angular methods.
+ *
+ * Fixes:
+ *  1. forAngularReady() no longer relies solely on testability API —
+ *     it falls back to network idle + DOM stability + no pending XHR.
+ *  2. forPageReady() is a universal "page is usable" guard you should
+ *     call after every navigation instead of raw waitForLoadState.
+ *  3. forElementOrAlternative() handles the "I clicked X, now either
+ *     A appears OR B appears" pattern that codegen always gets wrong.
+ *  4. forActionOutcome() — click something, then wait for what CHANGES
+ *     rather than waiting on the thing you clicked.
+ */
+export class SmartWaitHelper {
+  private logger: Logger;
+
+  constructor(private page: Page, logger?: Logger) {
+    this.logger = logger || new Logger({ level: 'info', console: true });
+  }
+
+  // ─── Core page readiness ────────────────────────────────────────────────────
+
+  /**
+   * Universal "page is ready" guard. Call this after every navigation.
+   * Combines network idle, Angular stability (if available), DOM stability,
+   * and absence of common loading indicators.
+   *
+   * @param options.timeout          - total budget in ms (default 120000 = 2 min)
+   * @param options.loadingSelectors - extra selectors to wait to disappear
+   * @param options.requiredSelector - selector that MUST appear before we return
+   */
+  async forPageReady(options: {
+    timeout?: number;
+    loadingSelectors?: string[];
+    requiredSelector?: string;
+  } = {}): Promise<void> {
+    const {
+      timeout = 120_000,
+      loadingSelectors = [],
+      requiredSelector,
+    } = options;
+
+    const deadline = Date.now() + timeout;
+    this.logger.debug('Waiting for page to be ready...');
+
+    // 1. DOM content loaded first (fast, always works)
+    await this.page.waitForLoadState('domcontentloaded', {
+      timeout: Math.min(30_000, timeout),
+    });
+
+    // 2. Network idle — but with a generous timeout for slow SPAs
+    try {
+      await this.page.waitForLoadState('networkidle', {
+        timeout: Math.min(60_000, deadline - Date.now()),
+      });
+    } catch {
+      // Network never went fully idle — that's OK for apps with polling/SSE
+      this.logger.debug('Network never went idle — continuing anyway');
+    }
+
+    // 3. Angular testability (only works in dev mode, harmless if absent)
+    await this.forAngularReady(Math.min(10_000, deadline - Date.now()));
+
+    // 4. Wait for common loading indicators to disappear
+    const defaultLoaders = [
+      '[class*="loading"]',
+      '[class*="spinner"]',
+      'mat-spinner',
+      'mat-progress-bar',
+      '[role="progressbar"]',
+      '.ngx-loading',
+      '.loading-overlay',
+      ...loadingSelectors,
+    ];
+
+    for (const sel of defaultLoaders) {
+      try {
+        const el = this.page.locator(sel).first();
+        const count = await el.count();
+        if (count > 0) {
+          await el.waitFor({
+            state: 'hidden',
+            timeout: Math.min(30_000, deadline - Date.now()),
+          });
+        }
+      } catch {
+        // Selector not present — fine
+      }
+    }
+
+    // 5. DOM stability — wait until no new nodes appear for 300ms
+    await this.forDomStability(Math.min(5_000, deadline - Date.now()));
+
+    // 6. Required element must be visible
+    if (requiredSelector) {
+      await this.page.locator(requiredSelector).first().waitFor({
+        state: 'visible',
+        timeout: deadline - Date.now(),
+      });
+    }
+
+    this.logger.debug('Page is ready');
+  }
+
+  /**
+   * Angular testability check. Gracefully handles:
+   * - Angular not present (non-Angular pages)
+   * - Production builds without testability
+   * - Zoneless Angular apps
+   */
+  async forAngularReady(timeout = 10_000): Promise<void> {
+    try {
+      await this.page.waitForFunction(
+        () => {
+          const win = window as any;
+
+          // Classic Zone.js Angular
+          if (win.getAllAngularTestabilities) {
+            const testabilities: any[] = win.getAllAngularTestabilities();
+            if (testabilities.length === 0) return true;
+            return testabilities.every((t: any) =>
+              typeof t.isStable === 'function' ? t.isStable() : true
+            );
+          }
+
+          // Zoneless / Angular 17+ signals
+          if (win.ng?.getComponent || win.ng?.probe) return true;
+
+          // Not an Angular app — just pass
+          return true;
+        },
+        { timeout, polling: 150 }
+      );
+    } catch {
+      // Angular testability not available — not a fatal error
+      this.logger.debug('Angular testability not available, skipping');
+    }
+  }
+
+  /**
+   * Wait until no new DOM mutations occur for `quietMs` milliseconds.
+   * Catches lazy-loaded content, deferred images, and animation end-states.
+   */
+  async forDomStability(timeout = 5_000, quietMs = 300): Promise<void> {
+    try {
+      await this.page.waitForFunction(
+        (quiet) => {
+          return new Promise<boolean>((resolve) => {
+            let timer: ReturnType<typeof setTimeout>;
+            const observer = new MutationObserver(() => {
+              clearTimeout(timer);
+              timer = setTimeout(() => {
+                observer.disconnect();
+                resolve(true);
+              }, quiet);
+            });
+            observer.observe(document.body, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+            });
+            // Resolve immediately if nothing changes within quietMs
+            timer = setTimeout(() => {
+              observer.disconnect();
+              resolve(true);
+            }, quiet);
+          });
+        },
+        quietMs,
+        { timeout }
+      );
+    } catch {
+      // Timeout is acceptable — DOM was simply always changing
+    }
+  }
+
+  // ─── Conditional / outcome-based waiting ────────────────────────────────────
+
+  /**
+   * After performing an action, wait for ONE OF several possible outcomes.
+   * Returns the index of whichever outcome appeared first.
+   *
+   * This is the solution to: "I clicked a checkbox, now a new form appears
+   * instead of the checkbox being checked."
+   *
+   * @example
+   * await action.click(checkbox);
+   * const outcome = await wait.forOneOf([
+   *   page.locator('#new-form'),          // 0 — form expanded
+   *   page.locator('.error-message'),     // 1 — validation error
+   *   page.locator('.success-banner'),    // 2 — submitted
+   * ]);
+   * if (outcome === 0) { ... handle expanded form ... }
+   */
+  async forOneOf(
+    locators: Locator[],
+    timeout = 15_000
+  ): Promise<number> {
+    const result = await Promise.race(
+      locators.map((locator, index) =>
+        locator
+          .waitFor({ state: 'visible', timeout })
+          .then(() => index)
+      )
+    );
+    return result;
+  }
+
+  /**
+   * Perform an action, then wait for a state change — NOT for the
+   * original element's state. Fixes the collapsed-form pattern.
+   *
+   * @param action        - async function that performs the interaction
+   * @param outcomeLocator - locator that should become visible as a result
+   * @param options.timeout
+   * @param options.hiddenLocator - optionally assert that original element hides
+   */
+  async forActionOutcome(
+    action: () => Promise<void>,
+    outcomeLocator: Locator,
+    options: {
+      timeout?: number;
+      hiddenLocator?: Locator;
+    } = {}
+  ): Promise<void> {
+    const { timeout = 15_000, hiddenLocator } = options;
+
+    await action();
+
+    if (hiddenLocator) {
+      // Original element may disappear — don't wait for it to be checked
+      await hiddenLocator
+        .waitFor({ state: 'hidden', timeout: Math.min(5_000, timeout) })
+        .catch(() => {
+          // It didn't hide — that's OK, just continue
+        });
+    }
+
+    await outcomeLocator.waitFor({ state: 'visible', timeout });
+  }
+
+  /**
+   * Waits for a locator to either appear OR disappear, whichever matches first.
+   * Use when you don't know if an element will be present after an action.
+   */
+  async forState(
+    locator: Locator,
+    states: Array<'visible' | 'hidden' | 'attached' | 'detached'>,
+    timeout = 10_000
+  ): Promise<'visible' | 'hidden' | 'attached' | 'detached'> {
+    const result = await Promise.race(
+      states.map((state) =>
+        locator
+          .waitFor({ state, timeout })
+          .then(() => state)
+      )
+    );
+    return result;
+  }
+
+  /**
+   * Safe check: returns true if element is visible RIGHT NOW, false otherwise.
+   * Never throws. Use instead of isVisible() which can throw if element detaches.
+   */
+  async isVisibleNow(locator: Locator): Promise<boolean> {
+    try {
+      return await locator.isVisible({ timeout: 500 });
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Safe check: returns true if element is in DOM right now.
+   */
+  async isInDom(locator: Locator): Promise<boolean> {
+    try {
+      return (await locator.count()) > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  // ─── Retry wrappers ─────────────────────────────────────────────────────────
+
+  /**
+   * Retry an action+assertion pair up to N times.
+   * Use when a step is flaky due to animations or race conditions.
+   */
+  async withRetry<T>(
+    fn: () => Promise<T>,
+    options: {
+      times?: number;
+      delay?: number;
+      onFailure?: (attempt: number, err: Error) => void;
+    } = {}
+  ): Promise<T> {
+    const { times = 3, delay = 1000, onFailure } = options;
+    let lastErr: Error | undefined;
+
+    for (let attempt = 1; attempt <= times; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastErr = err instanceof Error ? err : new Error(String(err));
+        onFailure?.(attempt, lastErr);
+        if (attempt < times) {
+          await this.page.waitForTimeout(delay);
+        }
+      }
+    }
+
+    throw lastErr;
+  }
+
+  /**
+   * Poll until an async condition returns true.
+   * Cleaner version of the base WaitHelper.until() with better error message.
+   */
+  async until(
+    condition: () => Promise<boolean>,
+    options: {
+      timeout?: number;
+      interval?: number;
+      message?: string;
+    } = {}
+  ): Promise<void> {
+    const { timeout = 30_000, interval = 300, message = 'Condition not met' } = options;
+    const start = Date.now();
+
+    while (Date.now() - start < timeout) {
+      if (await condition()) return;
+      await this.page.waitForTimeout(interval);
+    }
+
+    throw new Error(`${message} (after ${timeout}ms)`);
+  }
+
+  // ─── BDD-specific helpers ───────────────────────────────────────────────────
+
+  /**
+   * Navigate and wait for the page to be fully ready.
+   * Replaces the common pattern of goto() + forAngularReady() in step defs.
+   */
+  async navigateAndWait(
+    url: string,
+    options: {
+      timeout?: number;
+      requiredSelector?: string;
+      loadingSelectors?: string[];
+    } = {}
+  ): Promise<void> {
+    await this.page.goto(url, {
+      waitUntil: 'domcontentloaded',
+      timeout: options.timeout ?? 120_000,
+    });
+    await this.forPageReady(options);
+  }
+}# Converting Playwright Codegen → Robust BDD Steps
+
+## The core principle
+
+Codegen records WHAT you did. Good BDD steps assert WHAT CHANGED as a result.
+
+Codegen output:
+  click checkbox → assert checkbox.isChecked()
+
+Correct BDD step:
+  click checkbox → assert new section is visible
+
+---
+
+## Problem 1: Slow app loads (2-minute timeout)
+
+### Root cause
+The default Cucumber step timeout is 5 seconds. Your SPA takes 2 minutes.
+Angular's `forAngularReady()` only works in dev mode — in prod builds it
+resolves immediately before content renders.
+
+### Fix
+
+In hooks.ts, add this as the VERY FIRST LINE before any hooks:
+
+```ts
+import { setDefaultTimeout } from '@cucumber/cucumber';
+setDefaultTimeout(3 * 60 * 1000); // 3 minutes
+```
+
+Replace your navigation steps with SmartWaitHelper.navigateAndWait():
+
+```ts
+// OLD — breaks with slow SPAs:
+Given('I open the app', async function(this: PwCraftWorld) {
+  await this.nav.goto('/');
+  await this.wait.forAngularReady(); // resolves immediately in prod!
+});
+
+// NEW — robust for any SPA speed:
+Given('I open the app', async function(this: PwCraftWorld) {
+  const smart = new SmartWaitHelper(this.page);
+  await smart.navigateAndWait(this.config.baseUrl, {
+    timeout: 120_000,
+    requiredSelector: 'app-root', // your app's root element
+  });
+});
+```
+
+### What SmartWaitHelper.navigateAndWait() does differently
+1. waitForLoadState('domcontentloaded') — fast first signal
+2. waitForLoadState('networkidle') with 60s budget — catches API calls
+3. forAngularReady() — Angular testability if available, no-op if not
+4. Scans for and waits on spinners/loaders to disappear
+5. forDomStability() — waits until no DOM mutations for 300ms
+
+---
+
+## Problem 2: Checkbox collapses form → step gets stuck
+
+### What codegen generated (broken):
+```ts
+When('I check the "Residential" checkbox', async function(this: PwCraftWorld) {
+  const cb = this.find.checkboxByLabel('Residential');
+  await this.action.check(cb);
+  await expect(cb).toBeChecked(); // ← WRONG: checkbox leaves DOM after click
+});
+```
+
+### Why it gets stuck
+After clicking, your app:
+1. Marks form section A as collapsed (removes from DOM)
+2. Renders form section B
+3. The checkbox is inside section A → it's gone → isChecked() waits forever
+
+### Fix pattern: assert the OUTCOME, not the clicked element
+
+```ts
+// PATTERN 1: New section appears after checkbox click
+When('I check the "Residential" checkbox', async function(this: PwCraftWorld) {
+  const smart = new SmartWaitHelper(this.page);
+  await this.action.click(this.find.checkboxByLabel('Residential'));
+  // Wait for whatever the DOM change is — don't assume
+  await smart.forDomStability(3_000);
+});
+
+Then('the residential form should be visible', async function(this: PwCraftWorld) {
+  // Assert on the RESULT of the action
+  await this.assert.elementVisible(this.find.byTestId('residential-form'));
+});
+```
+
+```ts
+// PATTERN 2: You know what appears — combine into one step
+When('I check "Include spouse" and the spouse section appears', async function(this: PwCraftWorld) {
+  const smart = new SmartWaitHelper(this.page);
+  await smart.forActionOutcome(
+    () => this.action.click(this.find.checkboxByLabel('Include spouse')),
+    this.find.byTestId('spouse-section'),    // what to wait for
+    { hiddenLocator: this.find.byTestId('no-spouse-msg') } // what disappears
+  );
+});
+```
+
+```ts
+// PATTERN 3: Multiple possible outcomes (success or error)
+When('I submit the form', async function(this: PwCraftWorld) {
+  const smart = new SmartWaitHelper(this.page);
+  await this.action.click(this.find.byRole('button', { name: 'Submit' }));
+  const outcome = await smart.forOneOf([
+    this.page.locator('[data-testid="success-message"]'),
+    this.page.locator('[data-testid="error-message"]'),
+    this.page.locator('[data-testid="validation-errors"]'),
+  ]);
+  this.logger.info(`Submit outcome index: ${outcome}`);
+});
+```
+
+---
+
+## Problem 3: BDD closes without waiting
+
+### Symptom
+The After hook runs before the step actually finishes — test passes when it
+should fail, or page is blank in failure screenshot.
+
+### Root cause
+Missing `await` somewhere in the promise chain, OR the step returns before
+the navigation triggered by the action completes.
+
+### Fix: wrap navigating clicks with explicit post-navigation wait
+
+```ts
+// OLD (closes before navigation completes):
+When('I click Login', async function(this: PwCraftWorld) {
+  await this.action.click(this.find.byRole('button', { name: 'Login' }));
+  // Step returns here — but page is still navigating!
+});
+
+// NEW:
+When('I click Login', async function(this: PwCraftWorld) {
+  const smart = new SmartWaitHelper(this.page);
+  await this.action.click(this.find.byRole('button', { name: 'Login' }));
+  await smart.forPageReady({ timeout: 60_000 });
+  // OR if you know where it should go:
+  await this.wait.forUrl('/dashboard', 60_000);
+});
+```
+
+---
+
+## Problem 4: Converting codegen's locator strategy
+
+Codegen generates brittle locators. Here's how to translate them:
+
+| Codegen output | pw-craft equivalent | Why better |
+|---|---|---|
+| `page.locator('#form-1234')` | `find.byTestId('checkout-form')` | IDs change, testids don't |
+| `page.locator('button:nth-child(3)')` | `find.byRole('button', { name: 'Continue' })` | Position-independent |
+| `page.locator('input[type="checkbox"]').nth(2)` | `find.checkboxByLabel('Same address')` | Semantic, reads like spec |
+| `page.click('text=Submit')` | `find.byRole('button', { name: 'Submit' })` | Role-scoped, avoids false matches |
+| `page.locator('.mat-checkbox-input')` | `find.checkboxByLabel('Remember me')` | Survives Angular Material upgrades |
+
+---
+
+## Gherkin patterns for complex form interactions
+
+### Accordion / collapse patterns
+
+```gherkin
+# DON'T write this (codegen style — tests the implementation):
+When I check the "Residential" checkbox
+Then the "Residential" checkbox should be checked
+
+# DO write this (BDD style — tests the behaviour):
+When I indicate I am a residential customer
+Then I should see the residential address form
+And the business details section should not be visible
+```
+
+```ts
+// Step implementation:
+When('I indicate I am a residential customer', async function(this: PwCraftWorld) {
+  const smart = new SmartWaitHelper(this.page);
+  await smart.forActionOutcome(
+    () => this.action.click(this.find.checkboxByLabel('Residential')),
+    this.find.byTestId('residential-form'),
+    { timeout: 10_000 }
+  );
+});
+```
+
+### Multi-step form wizard
+
+```gherkin
+Scenario: Complete address form
+  Given I am on the checkout page
+  When I fill in the form:
+    | Full name   | Jane Doe          |
+    | Street      | 123 Main St       |
+    | City        | London            |
+  And I indicate delivery is to a different address
+  Then the delivery address form should be visible
+  When I fill in the delivery form:
+    | Full name   | John Doe          |
+    | Street      | 456 Other Road    |
+```
+
+---
+
+## Cucumber config timeout reference
+
+```js
+// cucumber.config.cjs
+module.exports = {
+  // ...your config...
+};
+
+// In hooks.ts — must be at module level, before hooks:
+setDefaultTimeout(3 * 60 * 1000); // 3 minutes per step
+
+// For a specific slow step only, use a tagged timeout:
+Before({ timeout: 5 * 60 * 1000 }, async function(this: PwCraftWorld, scenario) {
+  await this.init(scenario.pickle.name);
+});
+```
+
+---
+
+## Quick diagnosis checklist
+
+When a step gets stuck, ask:
+
+1. Did the element I clicked LEAVE THE DOM after clicking?
+   → Use forDomStability() or forActionOutcome() instead of asserting its state
+
+2. Did clicking trigger a NAVIGATION?
+   → Use forPageReady() or waitForUrl() after the click
+
+3. Is the assertion on the CAUSE or the EFFECT?
+   → Always assert on the effect (what appeared/changed), not the cause
+
+4. Is the timeout long enough?
+   → Check setDefaultTimeout() in hooks.ts
+
+5. Does forAngularReady() actually work for your build?
+   → Open devtools, run window.getAllAngularTestabilities() — if undefined, use forDomStability() instead
