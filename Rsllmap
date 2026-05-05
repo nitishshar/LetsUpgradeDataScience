@@ -1,0 +1,1665 @@
+# LLM Communication Microservice — Architecture & Design Guide
+
+> **Stack:** Java 21 · Spring Boot 3.x · Spring AI · Maven · Java Records · Virtual Threads (Project Loom)
+> 
+> **Design Philosophy:** Pipeline-first, provider-agnostic, checkpoint-driven quality gate before LLM refinement. Built to scale — new LLM pipelines plug in without touching existing infrastructure.
+
+-----
+
+## Table of Contents
+
+1. [Overview & Core Concepts](#1-overview--core-concepts)
+1. [Pipeline Flow](#2-pipeline-flow)
+1. [Project Structure](#3-project-structure)
+1. [Architecture Principles](#4-architecture-principles)
+1. [Core Domain Model](#5-core-domain-model)
+1. [Checkpoint System](#6-checkpoint-system)
+1. [Rule Refinement Layer](#7-rule-refinement-layer)
+1. [Prompt Engineering Layer](#8-prompt-engineering-layer)
+1. [LLM Communication Layer](#9-llm-communication-layer)
+1. [Structured Response & Output](#10-structured-response--output)
+1. [Traceability & Observability](#11-traceability--observability)
+1. [Testing Strategy](#12-testing-strategy)
+1. [Configuration & Profiles](#13-configuration--profiles)
+1. [API Reference](#14-api-reference)
+1. [Security Considerations](#15-security-considerations)
+1. [Dependency Reference](#16-dependency-reference)
+1. [Adding a New LLM Pipeline](#17-adding-a-new-llm-pipeline)
+1. [Glossary](#18-glossary)
+
+-----
+
+## 1. Overview & Core Concepts
+
+This microservice is the **intelligent intermediary** between your domain applications and one or more LLM providers. It is designed as a **generic, pipeline-based platform** — rule refinement is the first pipeline, with the architecture ready to host any number of LLM workflows without structural change.
+
+### What a Checkpoint Is
+
+> A **Checkpoint** is a named **data quality standard** that an ingested rule is evaluated against **before** it reaches the LLM refinement stage. Checkpoints are declarative JSON specifications — non-developers can author and manage them without writing Java code.
+
+Checkpoints answer: *“Is this rule good enough to be sent for refinement, and does it satisfy the required standards?”*
+
+If a rule fails one or more checkpoints, **the failures are compiled into a structured feedback payload and passed directly to the LLM refinement request** so the model knows exactly what to fix.
+
+### Checkpoint Scopes
+
+|Scope                        |Description                                                    |Example                                               |
+|-----------------------------|---------------------------------------------------------------|------------------------------------------------------|
+|**Generic**                  |Global quality gates applied to every rule regardless of origin|Min length, no placeholder text, valid syntax         |
+|**Enterprise**               |Standards owned by enterprise governance                       |Regulatory language compliance, mandatory clauses     |
+|**Domain / Line-of-Business**|Standards for a specific business domain (Credit, Fraud, KYC)  |Domain-specific terminology, required field references|
+|**Rule-specific**            |Overrides or additions tied to one particular rule             |Custom constraint for a legacy rule                   |
+
+### Scalability Vision
+
+```
+Current Pipeline:   Rule Intake → Checkpoint Evaluation → Rule Refinement → Output
+Future Pipelines:   Document Summarization Pipeline
+                    Entity Extraction Pipeline
+                    Policy Classification Pipeline
+                    Risk Scoring Pipeline
+                    ... (registered via PipelineRegistry)
+```
+
+Every pipeline shares the same infrastructure: checkpoint evaluation, prompt assembly, LLM routing, structured response parsing, and traceability.
+
+-----
+
+## 2. Pipeline Flow
+
+### 2.1 The Four Stages
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          RULE REFINEMENT PIPELINE                               │
+│                                                                                 │
+│   ┌──────────────┐    ┌─────────────────────┐    ┌──────────────────┐          │
+│   │  1. RULE     │    │  2. CHECKPOINT       │    │  3. RULE         │          │
+│   │  INTAKE      │───►│  EVALUATION          │───►│  REFINEMENT      │          │
+│   │              │    │                      │    │  (LLM)           │          │
+│   └──────────────┘    └─────────────────────┘    └──────────────────┘          │
+│          │                      │                         │                     │
+│   Accept raw rule         Evaluate against          LLM refines rule            │
+│   Standardize format      all scoped checkpoints    using failures as           │
+│   Validate structure      Compile failure report    context / instructions      │
+│                                 │                         │                     │
+│                         ┌───────┴───────┐                 │                     │
+│                       PASS            FAIL                │                     │
+│                         │               │                 │                     │
+│                         │         Attach failure          │                     │
+│                         │         report to LLM ─────────┘                     │
+│                         │         refinement request                            │
+│                         │                                                       │
+│                         │                         ┌──────────────────┐          │
+│                         └────────────────────────►│  4. OUTPUT       │          │
+│                                                   │                  │          │
+│                                                   │  Structured JSON │          │
+│                                                   │  Refined rule    │          │
+│                                                   │  Checkpoint rpt  │          │
+│                                                   │  Trace ID        │          │
+│                                                   └──────────────────┘          │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 2.2 Stage Detail
+
+**Stage 1 — Rule Intake**
+
+- Accepts raw rule content via REST API
+- Standardizes format (whitespace, casing, punctuation normalization)
+- Validates structural completeness (name, content, domain assignment)
+- Assigns `enterpriseId` / `domainId` for checkpoint scope resolution
+- Persists rule as `DRAFT` status with version `1`
+
+**Stage 2 — Checkpoint Evaluation**
+
+- Resolves all applicable checkpoints for this rule by scope (GENERIC + ENTERPRISE + DOMAIN + RULE-specific)
+- Evaluates each checkpoint against the raw canonical content in `evaluationOrder`
+- Produces a `CheckpointEvaluationReport` with a pass/fail per checkpoint and failure reasons
+- `WARNING` failures are noted but do not block refinement
+- `BLOCKING` failures are compiled into a `RefinementFeedback` payload for the LLM
+- Rules with zero BLOCKING failures and no checkpoints: proceed with an empty feedback payload
+
+**Stage 3 — Rule Refinement (LLM)**
+
+- Selects prompt template based on whether failures exist:
+  - No failures → `rule-refinement.mustache` (standard refinement)
+  - Failures exist → `rule-refinement-with-feedback.mustache` (targeted fix instructions)
+- Sends compiled prompt to the configured LLM provider
+- Parses and validates the structured JSON response
+- Maps LLM output back onto the `Rule` domain object
+- Increments rule version; marks status `ACTIVE`
+
+**Stage 4 — Output**
+
+- Returns a structured `PipelineExecutionResponse` containing:
+  - Refined rule content and change rationale
+  - Full `CheckpointEvaluationReport` (which checkpoints passed/failed and why)
+  - `traceId` and `correlationId` for auditability
+  - Total pipeline duration and LLM tokens used
+
+### 2.3 Flow with Checkpoint Failures (Sequence)
+
+```
+Client            PipelineExecutor     RuleIntakeService    CheckpointEvaluationEngine    LlmRuleRefiner
+  │                      │                    │                        │                       │
+  │──POST /execute───────►│                    │                        │                       │
+  │                      │──intake(rule)───────►│                        │                       │
+  │                      │◄──standardizedRule───│                        │                       │
+  │                      │──evaluate(rule)───────────────────────────────►│                       │
+  │                      │◄──CheckpointEvaluationReport (failures)────────│                       │
+  │                      │                    │                        │                       │
+  │                      │  [failures exist]  │                        │                       │
+  │                      │──refine(rule, feedbackWithFailures)─────────────────────────────────►│
+  │                      │                    │                        │                    LLM Call
+  │                      │◄──RefinedRule────────────────────────────────────────────────────────│
+  │                      │                    │                        │                       │
+  │                      │  [no failures]     │                        │                       │
+  │                      │──refine(rule, emptyFeedback)────────────────────────────────────────►│
+  │                      │◄──RefinedRule────────────────────────────────────────────────────────│
+  │                      │                    │                        │                       │
+  │◄──PipelineExecutionResponse───────────────│                        │                       │
+```
+
+-----
+
+## 3. Project Structure
+
+```
+llm-service/
+├── pom.xml
+├── README.md
+├── docker-compose.yml
+├── .env.example
+│
+├── src/
+│   ├── main/
+│   │   ├── java/com/example/llmservice/
+│   │   │
+│   │   │   ── LlmServiceApplication.java
+│   │   │
+│   │   │   ── config/
+│   │   │   │   ├── LlmProviderConfig.java
+│   │   │   │   ├── PipelineConfig.java
+│   │   │   │   ├── VirtualThreadConfig.java
+│   │   │   │   ├── TracingConfig.java
+│   │   │   │   ├── SecurityConfig.java
+│   │   │   │   └── CacheConfig.java
+│   │   │   │
+│   │   │   ── api/
+│   │   │   │   ├── controller/
+│   │   │   │   │   ├── PipelineController.java
+│   │   │   │   │   ├── RuleController.java
+│   │   │   │   │   ├── CheckpointController.java
+│   │   │   │   │   └── TestHarnessController.java
+│   │   │   │   ├── dto/
+│   │   │   │   │   ├── request/
+│   │   │   │   │   │   ├── RuleIntakeRequest.java          # Record — raw rule from caller
+│   │   │   │   │   │   ├── PipelineExecutionRequest.java   # Record — pipeline options
+│   │   │   │   │   │   └── CheckpointDefinitionRequest.java
+│   │   │   │   │   └── response/
+│   │   │   │   │       ├── PipelineExecutionResponse.java  # Record — full output to caller
+│   │   │   │   │       ├── CheckpointEvaluationResponse.java
+│   │   │   │   │       └── RuleRefinementResponse.java
+│   │   │   │   └── advice/
+│   │   │   │       └── GlobalExceptionHandler.java
+│   │   │   │
+│   │   │   ── domain/                          # Zero-dependency core domain
+│   │   │   │   ├── pipeline/
+│   │   │   │   │   ├── Pipeline.java           # Interface
+│   │   │   │   │   ├── PipelineContext.java    # Record
+│   │   │   │   │   ├── PipelineResult.java     # Record
+│   │   │   │   │   └── PipelineType.java       # Enum
+│   │   │   │   ├── rule/
+│   │   │   │   │   ├── Rule.java               # Record
+│   │   │   │   │   ├── RuleSet.java            # Record
+│   │   │   │   │   ├── RuleVersion.java        # Record
+│   │   │   │   │   ├── RuleStatus.java         # Enum
+│   │   │   │   │   └── RefinementFeedback.java # Record — checkpoint failures → LLM context
+│   │   │   │   ├── checkpoint/
+│   │   │   │   │   ├── CheckpointDefinition.java       # Record — loaded from JSON
+│   │   │   │   │   ├── CheckpointScope.java            # Enum: GENERIC|ENTERPRISE|DOMAIN|RULE
+│   │   │   │   │   ├── CheckpointSeverity.java         # Enum: BLOCKING|WARNING
+│   │   │   │   │   ├── CheckpointResult.java           # Record — PASS|FAIL + reason
+│   │   │   │   │   ├── CheckpointFailure.java          # Record — one failed checkpoint
+│   │   │   │   │   └── CheckpointEvaluationReport.java # Record — full report for a rule
+│   │   │   │   ├── prompt/
+│   │   │   │   │   ├── PromptTemplate.java
+│   │   │   │   │   ├── PromptContext.java
+│   │   │   │   │   └── CompiledPrompt.java
+│   │   │   │   └── trace/
+│   │   │   │       ├── ExecutionTrace.java
+│   │   │   │       └── TraceEvent.java
+│   │   │   │
+│   │   │   ── pipeline/                        # Pipeline framework (generic, shared)
+│   │   │   │   ├── registry/
+│   │   │   │   │   ├── PipelineRegistry.java
+│   │   │   │   │   └── PipelineRegistryConfig.java
+│   │   │   │   ├── executor/
+│   │   │   │   │   ├── PipelineExecutor.java   # Routes to correct Pipeline + wraps tracing
+│   │   │   │   │   └── PipelineExecutionContext.java
+│   │   │   │   └── impl/
+│   │   │   │       └── RuleRefinementPipeline.java   # Orchestrates all 4 stages
+│   │   │   │
+│   │   │   ── intake/                          # Stage 1: Rule Intake
+│   │   │   │   ├── RuleIntakeService.java
+│   │   │   │   ├── RuleStandardizer.java       # Interface
+│   │   │   │   ├── CanonicalRuleMapper.java
+│   │   │   │   └── RuleNormalizer.java
+│   │   │   │
+│   │   │   ── checkpoint/                      # Stage 2: Checkpoint Evaluation
+│   │   │   │   ├── loader/
+│   │   │   │   │   ├── CheckpointLoader.java           # Reads JSON configs
+│   │   │   │   │   └── CheckpointDefinitionMapper.java
+│   │   │   │   ├── registry/
+│   │   │   │   │   └── CheckpointRegistry.java         # Scoped lookup
+│   │   │   │   ├── evaluator/
+│   │   │   │   │   ├── CheckpointEvaluator.java        # Interface (per evaluationType)
+│   │   │   │   │   ├── LengthCheckpointEvaluator.java
+│   │   │   │   │   ├── RegexCheckpointEvaluator.java
+│   │   │   │   │   ├── ContainsCheckpointEvaluator.java
+│   │   │   │   │   ├── LlmCheckpointEvaluator.java
+│   │   │   │   │   ├── SpelCheckpointEvaluator.java
+│   │   │   │   │   └── CheckpointEvaluationEngine.java # Resolves + runs all applicable checks
+│   │   │   │   └── feedback/
+│   │   │   │       └── RefinementFeedbackBuilder.java  # Converts failures → LLM context block
+│   │   │   │
+│   │   │   ── refinement/                      # Stage 3: Rule Refinement (LLM)
+│   │   │   │   ├── RuleRefiner.java            # Interface
+│   │   │   │   ├── LlmRuleRefiner.java         # Calls LLM with prompt + optional feedback
+│   │   │   │   └── RefinedRuleMapper.java      # Maps LLM output → Rule domain object
+│   │   │   │
+│   │   │   ── prompt/                          # Shared across all pipelines
+│   │   │   │   ├── assembler/
+│   │   │   │   │   ├── PromptAssembler.java    # Interface
+│   │   │   │   │   └── DefaultPromptAssembler.java
+│   │   │   │   ├── template/
+│   │   │   │   │   ├── TemplateRegistry.java
+│   │   │   │   │   ├── TemplateLoader.java
+│   │   │   │   │   └── TemplateRenderer.java
+│   │   │   │   └── context/
+│   │   │   │       ├── ContextBuilder.java
+│   │   │   │       └── ContextEnricher.java    # Interface — enricher chain
+│   │   │   │
+│   │   │   ── llm/                             # Shared LLM provider abstraction
+│   │   │   │   ├── client/
+│   │   │   │   │   ├── LlmClient.java          # Interface
+│   │   │   │   │   ├── OpenAiLlmClient.java
+│   │   │   │   │   ├── AnthropicLlmClient.java
+│   │   │   │   │   └── AzureLlmClient.java
+│   │   │   │   ├── router/
+│   │   │   │   │   ├── LlmRouter.java
+│   │   │   │   │   └── RoutingStrategy.java    # Enum
+│   │   │   │   ├── retry/
+│   │   │   │   │   └── LlmRetryPolicy.java
+│   │   │   │   └── model/
+│   │   │   │       ├── LlmRequest.java         # Record
+│   │   │   │       └── LlmRawResponse.java     # Record
+│   │   │   │
+│   │   │   ── response/                        # Shared structured response parsing
+│   │   │   │   ├── parser/
+│   │   │   │   │   ├── ResponseParser.java     # Interface
+│   │   │   │   │   └── JsonResponseParser.java
+│   │   │   │   ├── validator/
+│   │   │   │   │   ├── ResponseValidator.java
+│   │   │   │   │   └── SchemaValidator.java
+│   │   │   │   └── model/
+│   │   │   │       └── StructuredResponse.java # Record<T>
+│   │   │   │
+│   │   │   ── trace/                           # Shared traceability
+│   │   │   │   ├── TraceService.java
+│   │   │   │   ├── TraceRepository.java
+│   │   │   │   └── TraceEventPublisher.java
+│   │   │   │
+│   │   │   └── service/
+│   │   │       ├── RuleManagementService.java
+│   │   │       └── CheckpointManagementService.java
+│   │   │
+│   │   └── resources/
+│   │       ├── application.yml
+│   │       ├── application-local.yml
+│   │       ├── application-test.yml
+│   │       ├── application-staging.yml
+│   │       ├── db/migration/
+│   │       │   ├── V1__init_rules.sql
+│   │       │   ├── V2__init_traces.sql
+│   │       │   └── V3__init_checkpoints.sql
+│   │       ├── prompts/templates/
+│   │       │   ├── rule-refinement.mustache                 # No failures — standard refinement
+│   │       │   └── rule-refinement-with-feedback.mustache   # Failures present — targeted fix
+│   │       └── checkpoints/
+│   │           ├── generic/
+│   │           │   ├── min-length.json
+│   │           │   ├── no-placeholder-text.json
+│   │           │   └── valid-syntax.json
+│   │           ├── enterprise/
+│   │           │   ├── regulatory-language.json
+│   │           │   └── mandatory-clause.json
+│   │           └── domain/
+│   │               ├── credit/
+│   │               │   └── credit-field-references.json
+│   │               └── fraud/
+│   │                   └── fraud-terminology.json
+│   │
+│   └── test/
+│       ├── java/com/example/llmservice/
+│       │   ├── unit/
+│       │   │   ├── intake/
+│       │   │   │   └── RuleStandardizerTest.java
+│       │   │   ├── checkpoint/
+│       │   │   │   ├── CheckpointEvaluationEngineTest.java
+│       │   │   │   ├── CheckpointRegistryTest.java
+│       │   │   │   └── RefinementFeedbackBuilderTest.java
+│       │   │   ├── refinement/
+│       │   │   │   └── LlmRuleRefinerTest.java
+│       │   │   └── response/
+│       │   │       └── JsonResponseParserTest.java
+│       │   ├── integration/
+│       │   │   ├── RuleRefinementPipelineIT.java       # Full 4-stage flow with WireMock
+│       │   │   ├── CheckpointEvaluationIT.java         # Scope resolution end-to-end
+│       │   │   └── CheckpointFeedbackToLlmIT.java      # Failures correctly reach LLM prompt
+│       │   └── llm/
+│       │       ├── harness/
+│       │       │   ├── LlmTestHarness.java
+│       │       │   └── PromptScenario.java
+│       │       ├── prompt/
+│       │       │   ├── PromptRefinementTest.java
+│       │       │   └── PromptRegressionTest.java
+│       │       ├── model/
+│       │       │   ├── ModelRefinementTest.java
+│       │       │   └── ModelComparisonTest.java
+│       │       └── fixtures/
+│       │           ├── scenarios/
+│       │           │   ├── clean-rule-no-failures.json
+│       │           │   ├── rule-with-enterprise-failures.json
+│       │           │   ├── rule-with-domain-failures.json
+│       │           │   └── rule-with-mixed-scope-failures.json
+│       │           └── expected/
+│       │               ├── clean-rule-output.json
+│       │               └── enterprise-failure-corrected-output.json
+│       └── resources/
+│           ├── application-test.yml
+│           └── wiremock/
+│               ├── openai-refinement-clean.json
+│               └── openai-refinement-with-feedback.json
+│
+└── docs/
+    ├── adr/
+    │   ├── ADR-001-checkpoint-before-refinement.md
+    │   ├── ADR-002-checkpoint-as-data-quality-standard.md
+    │   └── ADR-003-pipeline-registry-pattern.md
+    ├── api/openapi.yaml
+    └── diagrams/
+        ├── pipeline-flow.png
+        └── checkpoint-scope-resolution.png
+```
+
+-----
+
+## 4. Architecture Principles
+
+### 4.1 Stage Separation
+
+Each of the four pipeline stages has a single responsibility and a clear boundary. They communicate only through domain records — no stage knows about the internals of another.
+
+```
+RuleIntakeService         →  produces  →  Rule (DRAFT, canonical)
+CheckpointEvaluationEngine →  produces  →  CheckpointEvaluationReport + RefinementFeedback
+LlmRuleRefiner            →  produces  →  Rule (ACTIVE, refined)
+PipelineExecutionResponse →  assembles →  all stage outputs for the caller
+```
+
+### 4.2 Checkpoints Before LLM
+
+Checkpoint evaluation happens on the **raw standardized rule**, not on the LLM output. This ensures:
+
+- The LLM receives a clear, structured list of quality failures as part of its instructions
+- No LLM tokens are wasted refining a rule that hasn’t been quality-assessed first
+- Checkpoint failures are auditable independently of what the LLM did with them
+
+### 4.3 Checkpoint as LLM Context
+
+When checkpoints fail, the failures are not discarded — they become the **most important part of the LLM prompt**. The `RefinementFeedbackBuilder` converts each `CheckpointFailure` into a plain-language instruction the model can act on directly.
+
+### 4.4 Pipeline Registry
+
+All pipelines share infrastructure. Adding a new pipeline requires implementing one interface and registering it — no changes to `PipelineExecutor`, `CheckpointEvaluationEngine`, `LlmRouter`, or tracing.
+
+### 4.5 Dependency Hierarchy
+
+```
+api  ──►  pipeline / service  ──►  intake / checkpoint / refinement / prompt / llm / response / trace
+                                                    │
+                                                 domain
+                                        (zero framework dependencies)
+```
+
+-----
+
+## 5. Core Domain Model
+
+### 5.1 Rule
+
+```java
+// domain/rule/Rule.java
+public record Rule(
+    UUID id,
+    String name,
+    String description,
+    String rawContent,          // original as submitted
+    String canonicalContent,    // standardized by RuleIntakeService
+    RuleStatus status,          // DRAFT → ACTIVE | REFINEMENT_FAILED
+    int version,
+    String enterpriseId,        // used for ENTERPRISE checkpoint scope resolution
+    String domainId,            // used for DOMAIN checkpoint scope resolution
+    Map<String, Object> metadata,
+    Instant createdAt,
+    Instant updatedAt
+) {
+    public Rule {
+        Objects.requireNonNull(id);
+        Objects.requireNonNull(canonicalContent);
+        if (version < 1) throw new IllegalArgumentException("version must be >= 1");
+    }
+}
+
+public enum RuleStatus {
+    DRAFT,              // just ingested, not yet evaluated or refined
+    ACTIVE,             // successfully refined and output to caller
+    REFINEMENT_FAILED   // LLM could not produce a valid refinement
+}
+```
+
+### 5.2 Checkpoint Domain Objects
+
+```java
+// domain/checkpoint/CheckpointDefinition.java
+public record CheckpointDefinition(
+    String id,
+    String name,
+    String description,
+    CheckpointScope scope,           // GENERIC | ENTERPRISE | DOMAIN | RULE
+    CheckpointSeverity severity,     // BLOCKING | WARNING
+    String scopeOwnerId,             // null=GENERIC; enterpriseId; domainId; or ruleId
+    String evaluationType,           // LENGTH | REGEX | CONTAINS | LLM_EVAL | CUSTOM_EXPR
+    Map<String, Object> parameters,
+    boolean active,
+    int evaluationOrder
+) {}
+
+// domain/checkpoint/CheckpointFailure.java
+public record CheckpointFailure(
+    String checkpointId,
+    String checkpointName,
+    CheckpointScope scope,
+    CheckpointSeverity severity,
+    String failureReason,            // plain language — fed directly to LLM
+    String evaluatedValue            // the snippet that triggered the failure
+) {}
+
+// domain/checkpoint/CheckpointEvaluationReport.java
+public record CheckpointEvaluationReport(
+    UUID ruleId,
+    int totalChecked,
+    int passed,
+    int failed,
+    boolean hasBlockingFailures,
+    List<CheckpointFailure> failures,
+    Instant evaluatedAt
+) {}
+
+public enum CheckpointScope    { GENERIC, ENTERPRISE, DOMAIN, RULE }
+public enum CheckpointSeverity { BLOCKING, WARNING }
+```
+
+### 5.3 Refinement Feedback
+
+```java
+// domain/rule/RefinementFeedback.java
+public record RefinementFeedback(
+    UUID ruleId,
+    boolean hasFailures,
+    List<CheckpointFailure> failures,
+    String feedbackNarrative     // structured text injected into LLM prompt
+) {
+    public static RefinementFeedback none(UUID ruleId) {
+        return new RefinementFeedback(ruleId, false, List.of(), "");
+    }
+}
+```
+
+-----
+
+## 6. Checkpoint System
+
+### 6.1 JSON Checkpoint Format
+
+All checkpoints are JSON files — no Java required for authoring.
+
+```json
+// resources/checkpoints/generic/min-length.json
+{
+  "id": "generic-min-length",
+  "name": "Minimum Rule Length",
+  "description": "Canonical rule content must be at least 20 characters",
+  "scope": "GENERIC",
+  "severity": "BLOCKING",
+  "scopeOwnerId": null,
+  "evaluationType": "LENGTH",
+  "parameters": {
+    "minLength": 20,
+    "field": "canonicalContent"
+  },
+  "active": true,
+  "evaluationOrder": 1
+}
+```
+
+```json
+// resources/checkpoints/enterprise/regulatory-language.json
+{
+  "id": "ent-regulatory-language",
+  "name": "Regulatory Language Compliance",
+  "description": "Rule must not contain informal or prohibited terms",
+  "scope": "ENTERPRISE",
+  "severity": "BLOCKING",
+  "scopeOwnerId": "ENTERPRISE_GLOBAL",
+  "evaluationType": "REGEX",
+  "parameters": {
+    "prohibitedPatterns": ["should be", "might", "ASAP", "TBD", "etc."],
+    "field": "canonicalContent"
+  },
+  "active": true,
+  "evaluationOrder": 10
+}
+```
+
+```json
+// resources/checkpoints/domain/credit/credit-field-references.json
+{
+  "id": "domain-credit-field-refs",
+  "name": "Credit Domain Field Reference",
+  "description": "Credit rules must reference at least one recognized credit field",
+  "scope": "DOMAIN",
+  "severity": "BLOCKING",
+  "scopeOwnerId": "DOMAIN_CREDIT",
+  "evaluationType": "CONTAINS",
+  "parameters": {
+    "requiredTerms": ["LTV", "DTI", "FICO", "credit score", "bureau"],
+    "minMatches": 1,
+    "field": "canonicalContent"
+  },
+  "active": true,
+  "evaluationOrder": 5
+}
+```
+
+```json
+// Rule-specific checkpoint
+{
+  "id": "rule-r001-max-length",
+  "name": "Legacy Rule R001 Max Length",
+  "description": "This legacy rule must remain concise — max 150 chars",
+  "scope": "RULE",
+  "severity": "WARNING",
+  "scopeOwnerId": "RULE_ID_r001",
+  "evaluationType": "LENGTH",
+  "parameters": {
+    "maxLength": 150,
+    "field": "canonicalContent"
+  },
+  "active": true,
+  "evaluationOrder": 50
+}
+```
+
+### 6.2 Scope Resolution
+
+The engine resolves all applicable checkpoints for a rule before evaluating any of them:
+
+```
+CheckpointEvaluationEngine.resolveFor(rule)
+    │
+    ├── 1. All GENERIC checkpoints               (always included)
+    ├── 2. ENTERPRISE checkpoints where
+    │       scopeOwnerId == rule.enterpriseId
+    ├── 3. DOMAIN checkpoints where
+    │       scopeOwnerId == rule.domainId
+    └── 4. RULE checkpoints where
+            scopeOwnerId == rule.id.toString()
+
+Merged list sorted by evaluationOrder ascending before execution.
+```
+
+### 6.3 Checkpoint Evaluation Engine
+
+```java
+// checkpoint/evaluator/CheckpointEvaluationEngine.java
+@Service
+public class CheckpointEvaluationEngine {
+
+    private final CheckpointRegistry registry;
+    private final Map<String, CheckpointEvaluator> evaluators; // keyed by evaluationType
+
+    public CheckpointEvaluationReport evaluate(Rule rule) {
+        var applicable = registry.resolveFor(rule);
+        var failures   = new ArrayList<CheckpointFailure>();
+
+        for (var checkpoint : applicable) {
+            var result = evaluators
+                .get(checkpoint.evaluationType())
+                .evaluate(rule, checkpoint);
+
+            if (!result.passed()) {
+                failures.add(new CheckpointFailure(
+                    checkpoint.id(),
+                    checkpoint.name(),
+                    checkpoint.scope(),
+                    checkpoint.severity(),
+                    result.failureReason(),
+                    result.evaluatedValue()
+                ));
+            }
+        }
+
+        boolean hasBlocking = failures.stream()
+            .anyMatch(f -> f.severity() == CheckpointSeverity.BLOCKING);
+
+        return new CheckpointEvaluationReport(
+            rule.id(), applicable.size(),
+            applicable.size() - failures.size(),
+            failures.size(), hasBlocking, failures,
+            Instant.now()
+        );
+    }
+}
+```
+
+### 6.4 Built-in Evaluator Types
+
+|`evaluationType`|Parameters                                         |Behaviour                                                                                           |
+|----------------|---------------------------------------------------|----------------------------------------------------------------------------------------------------|
+|`LENGTH`        |`minLength`, `maxLength`, `field`                  |Checks character length of the specified field                                                      |
+|`REGEX`         |`prohibitedPatterns` or `requiredPatterns`, `field`|Matches patterns; fails if prohibited found or required missing                                     |
+|`CONTAINS`      |`requiredTerms`, `minMatches`, `field`             |Asserts at least `minMatches` of `requiredTerms` are present                                        |
+|`LLM_EVAL`      |`judgePrompt`, `model`                             |Sends rule + judgePrompt to a lightweight LLM judge; expects `{"pass": true/false, "reason": "..."}`|
+|`CUSTOM_EXPR`   |`expression`                                       |Evaluates a Spring Expression Language (SpEL) expression against the `Rule` record                  |
+
+### 6.5 Feedback Builder
+
+```java
+// checkpoint/feedback/RefinementFeedbackBuilder.java
+@Component
+public class RefinementFeedbackBuilder {
+
+    public RefinementFeedback build(Rule rule, CheckpointEvaluationReport report) {
+        if (!report.hasBlockingFailures()) {
+            return RefinementFeedback.none(rule.id());
+        }
+
+        var blockingFailures = report.failures().stream()
+            .filter(f -> f.severity() == CheckpointSeverity.BLOCKING)
+            .toList();
+
+        return new RefinementFeedback(
+            rule.id(),
+            true,
+            blockingFailures,
+            buildNarrative(blockingFailures)
+        );
+    }
+
+    private String buildNarrative(List<CheckpointFailure> failures) {
+        var sb = new StringBuilder(
+            "The following data quality standards were not met. " +
+            "You MUST rewrite the rule to satisfy each one:\n\n");
+
+        for (int i = 0; i < failures.size(); i++) {
+            var f = failures.get(i);
+            sb.append(String.format(
+                "%d. [%s] %s\n   Issue: %s\n   Problematic value: \"%s\"\n\n",
+                i + 1, f.scope(), f.checkpointName(),
+                f.failureReason(), f.evaluatedValue()
+            ));
+        }
+        return sb.toString();
+    }
+}
+```
+
+-----
+
+## 7. Rule Refinement Layer
+
+### 7.1 Rule Refinement Pipeline (Orchestrator)
+
+```java
+// pipeline/impl/RuleRefinementPipeline.java
+@Component
+@Slf4j
+public class RuleRefinementPipeline implements Pipeline<RuleIntakeRequest, PipelineResult> {
+
+    private final RuleIntakeService intakeService;
+    private final CheckpointEvaluationEngine checkpointEngine;
+    private final RefinementFeedbackBuilder feedbackBuilder;
+    private final LlmRuleRefiner refiner;
+    private final TraceService traceService;
+
+    @Override
+    public PipelineType type() { return PipelineType.RULE_REFINEMENT; }
+
+    @Override
+    public PipelineResult execute(PipelineContext<RuleIntakeRequest> ctx) {
+        var trace = traceService.start(PipelineType.RULE_REFINEMENT, ctx.correlationId());
+
+        try {
+            // ── Stage 1: Rule Intake ──────────────────────────────────────
+            log.info("[{}] Stage 1: Rule intake", ctx.correlationId());
+            var rule = intakeService.ingest(ctx.input());
+            traceService.record(trace, TraceEvent.intake(rule));
+
+            // ── Stage 2: Checkpoint Evaluation ───────────────────────────
+            log.info("[{}] Stage 2: Checkpoint evaluation for rule {}", ctx.correlationId(), rule.id());
+            var checkpointReport = checkpointEngine.evaluate(rule);
+            var feedback         = feedbackBuilder.build(rule, checkpointReport);
+            traceService.record(trace, TraceEvent.checkpoints(checkpointReport));
+
+            log.info("[{}] Checkpoint result: {}/{} passed, blockingFailures={}",
+                ctx.correlationId(),
+                checkpointReport.passed(), checkpointReport.totalChecked(),
+                checkpointReport.hasBlockingFailures());
+
+            // ── Stage 3: Rule Refinement (LLM) ───────────────────────────
+            log.info("[{}] Stage 3: LLM refinement (feedbackPresent={})",
+                ctx.correlationId(), feedback.hasFailures());
+            var refinedRule = refiner.refine(rule, feedback, ctx.modelOptions());
+            traceService.record(trace, TraceEvent.refinement(refinedRule));
+
+            // ── Stage 4: Output ───────────────────────────────────────────
+            traceService.succeed(trace);
+            return PipelineResult.success(refinedRule, checkpointReport, trace.traceId());
+
+        } catch (Exception ex) {
+            traceService.fail(trace, ex);
+            throw new PipelineExecutionException("Rule refinement pipeline failed", ex);
+        }
+    }
+}
+```
+
+### 7.2 LLM Rule Refiner
+
+```java
+// refinement/LlmRuleRefiner.java
+@Component
+public class LlmRuleRefiner implements RuleRefiner {
+
+    private final PromptAssembler promptAssembler;
+    private final LlmRouter router;
+    private final JsonResponseParser responseParser;
+    private final RefinedRuleMapper ruleMapper;
+
+    @Override
+    public Rule refine(Rule rule, RefinementFeedback feedback, ModelOptions options) {
+        // Select template based on whether checkpoint failures exist
+        var templateId = feedback.hasFailures()
+            ? "rule-refinement-with-feedback"
+            : "rule-refinement";
+
+        var context = PromptContext.builder()
+            .templateId(templateId)
+            .variable("rule",     rule)
+            .variable("feedback", feedback)
+            .build();
+
+        var compiled = promptAssembler.assemble(context);
+        var raw      = router.route(RoutingContext.from(options))
+                             .complete(LlmRequest.from(compiled, options));
+
+        var parsed = responseParser.parse(raw.content(),
+                         ResponseSchema.json(RefinedRuleOutput.class));
+
+        return ruleMapper.apply(rule, parsed.payload());
+    }
+}
+```
+
+-----
+
+## 8. Prompt Engineering Layer
+
+### 8.1 Standard Refinement Template (`rule-refinement.mustache`)
+
+Used when no blocking checkpoint failures exist. The rule already meets quality standards; the LLM focuses purely on improving clarity and precision.
+
+```mustache
+{{! SYSTEM }}
+You are a rule standardization engine. Your task is to refine the provided
+rule to be precise, unambiguous, and actionable. Do not introduce new
+requirements. Respond ONLY with valid JSON — no markdown, no explanation.
+
+{{! USER }}
+## Rule to Refine
+ID:      {{rule.id}}
+Name:    {{rule.name}}
+Content: {{rule.canonicalContent}}
+Domain:  {{rule.domainId}}
+
+## Response Schema
+{
+  "id": "same as input ID",
+  "canonicalContent": "refined rule text",
+  "changeReason": "brief explanation of what was improved"
+}
+```
+
+### 8.2 Feedback Refinement Template (`rule-refinement-with-feedback.mustache`)
+
+Used when blocking checkpoint failures exist. Failures are injected as explicit fix instructions.
+
+```mustache
+{{! SYSTEM }}
+You are a rule standardization engine. A data quality evaluation has identified
+standards violations in the rule below. You MUST address every issue listed
+and rewrite the rule so it satisfies all standards. Respond ONLY with valid JSON.
+
+{{! USER }}
+## Rule to Refine
+ID:      {{rule.id}}
+Name:    {{rule.name}}
+Content: {{rule.canonicalContent}}
+Domain:  {{rule.domainId}}
+
+## Data Quality Standards Violations — You Must Fix All of These
+{{feedback.feedbackNarrative}}
+
+## Response Schema
+{
+  "id": "same as input ID",
+  "canonicalContent": "corrected rule text addressing every violation above",
+  "changeReason": "what was fixed and how each violation was resolved"
+}
+```
+
+### 8.3 Prompt Assembler
+
+```java
+// prompt/assembler/DefaultPromptAssembler.java
+@Service
+public class DefaultPromptAssembler implements PromptAssembler {
+
+    private final TemplateRegistry templateRegistry;
+    private final List<ContextEnricher> enrichers;
+
+    @Override
+    public CompiledPrompt assemble(PromptContext context) {
+        // Enrich context through the enricher chain (metadata, system config, etc.)
+        var enriched = enrichers.stream()
+            .reduce(context, (ctx, e) -> e.enrich(ctx), (a, b) -> b);
+
+        var template = templateRegistry.get(enriched.templateId());
+        return new CompiledPrompt(
+            template.renderSystem(enriched.variables()),
+            template.renderUser(enriched.variables()),
+            enriched.traceId()
+        );
+    }
+}
+```
+
+-----
+
+## 9. LLM Communication Layer
+
+### 9.1 LLM Client Interface
+
+```java
+// llm/client/LlmClient.java
+public interface LlmClient {
+    String providerId();
+    LlmRawResponse complete(LlmRequest request);
+    Flux<String> stream(LlmRequest request);
+    boolean isAvailable();
+}
+```
+
+### 9.2 LLM Router
+
+```java
+// llm/router/LlmRouter.java
+@Component
+public class LlmRouter {
+
+    private final Map<String, LlmClient> clients;
+    private final LlmRoutingProperties props;
+
+    public LlmClient route(RoutingContext ctx) {
+        return switch (props.strategy()) {
+            case EXPLICIT    -> clients.get(ctx.preferredProvider());
+            case ROUND_ROBIN -> nextAvailable();
+            case COST_AWARE  -> cheapestAvailable(ctx.estimatedTokens());
+            case FAILOVER    -> primaryOrFallback();
+        };
+    }
+}
+```
+
+### 9.3 Virtual Threads
+
+```java
+// config/VirtualThreadConfig.java
+@Configuration
+public class VirtualThreadConfig {
+
+    // Java 21 — virtual thread per request; handles high-concurrency LLM I/O
+    // without reactive complexity or thread pool exhaustion
+    @Bean
+    public TomcatProtocolHandlerCustomizer<?> virtualThreadCustomizer() {
+        return handler ->
+            handler.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+    }
+}
+```
+
+-----
+
+## 10. Structured Response & Output
+
+### 10.1 Structured Response
+
+```java
+// response/model/StructuredResponse.java
+public record StructuredResponse<T>(
+    T payload,
+    String rawContent,
+    boolean valid,
+    List<ValidationError> errors,
+    Map<String, Object> metadata
+) {}
+```
+
+### 10.2 Pipeline Execution Response (Stage 4 Output)
+
+```java
+// api/dto/response/PipelineExecutionResponse.java
+public record PipelineExecutionResponse(
+    String traceId,
+    String correlationId,
+    PipelineType pipelineType,
+    boolean success,
+    RuleRefinementResponse refinedRule,
+    CheckpointEvaluationResponse checkpointReport,
+    long durationMs,
+    int llmTokensUsed
+) {}
+
+public record RuleRefinementResponse(
+    UUID ruleId,
+    String name,
+    String canonicalContent,
+    String changeReason,
+    int version,
+    RuleStatus status
+) {}
+
+public record CheckpointEvaluationResponse(
+    int totalChecked,
+    int passed,
+    int failed,
+    boolean hasBlockingFailures,
+    List<CheckpointFailureResponse> failures
+) {}
+
+public record CheckpointFailureResponse(
+    String checkpointId,
+    String checkpointName,
+    String scope,
+    String severity,
+    String failureReason    // included in response so caller knows what was wrong and fixed
+) {}
+```
+
+### 10.3 JSON Response Parser
+
+```java
+// response/parser/JsonResponseParser.java
+@Component
+public class JsonResponseParser implements ResponseParser {
+
+    private static final Pattern JSON_FENCE =
+        Pattern.compile("```(?:json)?\\s*(\\{.*?})\\s*```", Pattern.DOTALL);
+
+    @Override
+    public <T> StructuredResponse<T> parse(String raw, ResponseSchema<T> schema) {
+        var cleaned = extractJson(raw);
+        var errors  = schemaValidator.validate(cleaned, schema);
+        T payload   = mapper.readValue(cleaned, schema.targetType());
+        return new StructuredResponse<>(payload, raw, errors.isEmpty(), errors, Map.of());
+    }
+
+    private String extractJson(String raw) {
+        var m = JSON_FENCE.matcher(raw);
+        return m.find() ? m.group(1).strip() : raw.strip();
+    }
+}
+```
+
+-----
+
+## 11. Traceability & Observability
+
+### 11.1 What Gets Traced Per Pipeline Run
+
+|Stage                |Trace Event            |Data Captured                                                    |
+|---------------------|-----------------------|-----------------------------------------------------------------|
+|Rule Intake          |`RULE_INTAKE`          |ruleId, name, rawContent length, canonicalContent                |
+|Checkpoint Evaluation|`CHECKPOINT_EVALUATION`|totalChecked, passed, failed, each failure reason + scope        |
+|Feedback Build       |`REFINEMENT_FEEDBACK`  |hasFailures, failure count, feedbackNarrative sent to LLM        |
+|LLM Call             |`LLM_CALL`             |templateId, provider, model, input tokens, output tokens, latency|
+|Refinement Output    |`REFINEMENT_COMPLETE`  |before/after canonicalContent, changeReason, version             |
+|Pipeline End         |`PIPELINE_COMPLETE`    |totalDuration, finalStatus                                       |
+
+### 11.2 Observability Stack
+
+|Concern                  |Tool                                                                           |
+|-------------------------|-------------------------------------------------------------------------------|
+|Distributed tracing      |Micrometer + OpenTelemetry → Jaeger / Zipkin                                   |
+|Metrics                  |Micrometer → Prometheus → Grafana                                              |
+|Structured logging       |SLF4J + Logback JSON; MDC carries `traceId`, `correlationId`, `ruleId`, `stage`|
+|Audit trail              |`ExecutionTrace` in PostgreSQL — queryable by rule, date, status, checkpoint   |
+|Checkpoint failure trends|Counter per `checkpointId` — reveals which standards are most violated         |
+
+### 11.3 Key Metrics
+
+```
+llm.pipeline.executions.total           {pipelineType, status}
+llm.pipeline.duration.seconds           {pipelineType}
+llm.checkpoint.evaluations.total        {ruleId, scope}
+llm.checkpoint.failures.total           {checkpointId, scope, severity}
+llm.llm.call.duration.seconds           {provider, model, templateId}
+llm.llm.tokens.used.total               {provider, model, direction=input|output}
+llm.rules.with.blocking.failures.total  (rules that entered refinement with failures)
+```
+
+-----
+
+## 12. Testing Strategy
+
+### 12.1 Test Pyramid
+
+```
+              ┌──────────────────────┐
+              │  LLM Harness Tests   │  Real LLM, env-gated (@Tag("llm"))
+              │  Model Comparison    │
+             ─┴──────────────────────┴─
+            ─┬──────────────────────────────┬─
+            │   Integration Tests            │  Full 4-stage flow, WireMock LLM stubs
+            │   - CheckpointFeedbackToLlmIT  │  Verifies failures reach LLM prompt
+            │   - ScopeResolutionIT          │
+           ─┴──────────────────────────────┴─
+          ─┬────────────────────────────────────┬─
+          │          Unit Tests                  │
+          │   - CheckpointEvaluationEngineTest   │
+          │   - RefinementFeedbackBuilderTest    │
+          │   - LlmRuleRefinerTest               │
+         ─┴────────────────────────────────────┴─
+```
+
+### 12.2 Unit — Checkpoint Evaluation Engine
+
+```java
+@ExtendWith(MockitoExtension.class)
+class CheckpointEvaluationEngineTest {
+
+    @Mock CheckpointRegistry registry;
+    @InjectMocks CheckpointEvaluationEngine engine;
+
+    @Test
+    void shouldFailBlockingCheckpointWhenRuleIsTooShort() {
+        var rule = RuleFixtures.ruleWithContent("Do it.");
+        given(registry.resolveFor(rule))
+            .willReturn(List.of(CheckpointFixtures.minLengthGeneric(20)));
+
+        var report = engine.evaluate(rule);
+
+        assertThat(report.hasBlockingFailures()).isTrue();
+        assertThat(report.failures()).hasSize(1);
+        assertThat(report.failures().get(0).checkpointId()).isEqualTo("generic-min-length");
+    }
+
+    @Test
+    void shouldApplyAllFourScopeLayersForCreditRule() {
+        var rule = RuleFixtures.creditRuleWithEnterpriseAndDomain();
+        given(registry.resolveFor(rule)).willReturn(List.of(
+            CheckpointFixtures.generic(),
+            CheckpointFixtures.enterprise("ENTERPRISE_GLOBAL"),
+            CheckpointFixtures.domain("DOMAIN_CREDIT"),
+            CheckpointFixtures.ruleSpecific(rule.id().toString())
+        ));
+
+        var report = engine.evaluate(rule);
+
+        assertThat(report.totalChecked()).isEqualTo(4);
+    }
+}
+```
+
+### 12.3 Unit — Refinement Feedback Builder
+
+```java
+class RefinementFeedbackBuilderTest {
+
+    RefinementFeedbackBuilder builder = new RefinementFeedbackBuilder();
+
+    @Test
+    void shouldReturnEmptyFeedbackWhenNoBlockingFailures() {
+        var report = CheckpointReportFixtures.allPassed();
+        var feedback = builder.build(RuleFixtures.activeRule(), report);
+
+        assertThat(feedback.hasFailures()).isFalse();
+        assertThat(feedback.feedbackNarrative()).isEmpty();
+    }
+
+    @Test
+    void narrativeShouldContainAllBlockingFailureReasons() {
+        var failures = List.of(
+            new CheckpointFailure("ent-regulatory", "Regulatory Language",
+                CheckpointScope.ENTERPRISE, CheckpointSeverity.BLOCKING,
+                "Contains prohibited term 'should be'", "should be done"),
+            new CheckpointFailure("generic-min-length", "Min Length",
+                CheckpointScope.GENERIC, CheckpointSeverity.BLOCKING,
+                "Content is 8 chars, minimum is 20", "Do it.")
+        );
+        var report = CheckpointReportFixtures.withBlockingFailures(failures);
+
+        var feedback = builder.build(RuleFixtures.draftRule(), report);
+
+        assertThat(feedback.hasFailures()).isTrue();
+        assertThat(feedback.feedbackNarrative())
+            .contains("Regulatory Language")
+            .contains("prohibited term 'should be'")
+            .contains("Min Length")
+            .contains("minimum is 20");
+    }
+}
+```
+
+### 12.4 Integration — Full Pipeline with WireMock
+
+```java
+@SpringBootTest
+@AutoConfigureWireMock(port = 0)
+@ActiveProfiles("test")
+class RuleRefinementPipelineIT {
+
+    @Autowired PipelineExecutor pipelineExecutor;
+
+    @Test
+    void shouldPassCheckpointsAndRefineCleanRule() {
+        stubFor(post(urlEqualTo("/v1/chat/completions"))
+            .willReturn(aResponse().withBodyFile("openai-refinement-clean.json")));
+
+        var result = pipelineExecutor.execute(PipelineContext.of(
+            PipelineType.RULE_REFINEMENT,
+            RuleIntakeFixtures.cleanRule(),
+            "corr-001"
+        ));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.checkpointReport().hasBlockingFailures()).isFalse();
+        assertThat(result.refinedRule().canonicalContent()).isNotBlank();
+    }
+
+    @Test
+    void shouldInjectCheckpointFailuresIntoLlmPromptWhenRuleFailsStandards() {
+        stubFor(post(urlEqualTo("/v1/chat/completions"))
+            .willReturn(aResponse().withBodyFile("openai-refinement-with-feedback.json")));
+
+        var result = pipelineExecutor.execute(PipelineContext.of(
+            PipelineType.RULE_REFINEMENT,
+            RuleIntakeFixtures.ruleFailingEnterpriseCheckpoint(),
+            "corr-002"
+        ));
+
+        // Verify the prompt sent to WireMock contained the failure narrative
+        verify(postRequestedFor(urlEqualTo("/v1/chat/completions"))
+            .withRequestBody(containing("Regulatory Language")));
+
+        assertThat(result.checkpointReport().failed()).isGreaterThan(0);
+        assertThat(result.refinedRule().canonicalContent()).isNotBlank();
+    }
+}
+```
+
+### 12.5 LLM Harness — Real Provider Scenario Format
+
+```json
+// test/resources/llm/scenarios/rule-with-enterprise-failures.json
+{
+  "name": "enterprise-regulatory-failure",
+  "pipelineType": "RULE_REFINEMENT",
+  "input": {
+    "name": "Max Retry Rule",
+    "canonicalContent": "It should be retried ASAP.",
+    "enterpriseId": "ENTERPRISE_GLOBAL",
+    "domainId": "DOMAIN_CREDIT"
+  },
+  "expectedCheckpointFailures": ["ent-regulatory-language"],
+  "expectedOutputContains": ["must not exceed", "retry"],
+  "minimumSemanticSimilarity": 0.78,
+  "expectedLlmTemplateName": "rule-refinement-with-feedback"
+}
+```
+
+### 12.6 Model Comparison Test
+
+```java
+@Tag("llm")
+@EnabledIfEnvironmentVariable(named = "LLM_TESTS_ENABLED", matches = "true")
+@SpringBootTest
+class ModelComparisonTest {
+
+    @Autowired PipelineExecutor pipelineExecutor;
+
+    @ParameterizedTest
+    @ValueSource(strings = {"gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514"})
+    void allModelsShouldProduceValidRefinementOutput(String model) {
+        var ctx = PipelineContext.of(
+            PipelineType.RULE_REFINEMENT,
+            RuleIntakeFixtures.standardRule(),
+            "model-test-" + model
+        ).withModel(model);
+
+        var result = pipelineExecutor.execute(ctx);
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.refinedRule().canonicalContent())
+            .hasSizeGreaterThan(20);
+    }
+}
+```
+
+-----
+
+## 13. Configuration & Profiles
+
+```yaml
+# application.yml
+spring:
+  application:
+    name: llm-service
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/llmservice}
+    username: ${DB_USER:llm}
+    password: ${DB_PASSWORD:secret}
+  flyway:
+    enabled: true
+  cache:
+    type: caffeine
+    caffeine:
+      spec: maximumSize=1000,expireAfterWrite=10m
+
+llm:
+  default-provider: openai
+  routing:
+    strategy: EXPLICIT
+  providers:
+    openai:
+      base-url: https://api.openai.com/v1
+      api-key: ${OPENAI_API_KEY}
+      default-model: gpt-4o-mini
+      timeout-seconds: 30
+      max-retries: 3
+    anthropic:
+      base-url: https://api.anthropic.com
+      api-key: ${ANTHROPIC_API_KEY}
+      default-model: claude-sonnet-4-20250514
+      timeout-seconds: 45
+
+pipeline:
+  rule-refinement:
+    include-checkpoint-report-in-response: true
+    include-failure-reasons-in-response: true   # expose to caller what was wrong
+
+checkpoint:
+  config-directory: classpath:checkpoints/
+  reload-on-change: true    # picks up new/updated JSON files without restart
+
+prompt:
+  template-directory: classpath:prompts/templates/
+
+tracing:
+  enabled: true
+  export-endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+```
+
+|Profile  |Purpose                                                              |
+|---------|---------------------------------------------------------------------|
+|`local`  |H2 in-memory DB, WireMock LLM stubs, checkpoint hot-reload           |
+|`test`   |H2, tracing disabled, fixed clock                                    |
+|`staging`|Real LLM providers, PostgreSQL, reduced sampling                     |
+|`prod`   |Full observability, secrets via Vault, checkpoint hot-reload disabled|
+
+-----
+
+## 14. API Reference
+
+### Execute Pipeline
+
+```
+POST /api/v1/pipelines/execute
+X-Correlation-Id: {uuid}
+
+{
+  "pipelineType": "RULE_REFINEMENT",
+  "rule": {
+    "name": "Max Retry Rule",
+    "rawContent": "It should be retried ASAP when things fail.",
+    "enterpriseId": "ENTERPRISE_GLOBAL",
+    "domainId": "DOMAIN_CREDIT"
+  },
+  "modelOptions": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "temperature": 0.2
+  }
+}
+
+→ 200 OK
+{
+  "traceId": "a1b2c3...",
+  "correlationId": "...",
+  "pipelineType": "RULE_REFINEMENT",
+  "success": true,
+  "refinedRule": {
+    "ruleId": "...",
+    "name": "Max Retry Rule",
+    "canonicalContent": "Retry attempts must not exceed 3 consecutive failures.",
+    "changeReason": "Removed informal language ('should be', 'ASAP'). Added credit domain field reference.",
+    "version": 2,
+    "status": "ACTIVE"
+  },
+  "checkpointReport": {
+    "totalChecked": 4,
+    "passed": 4,
+    "failed": 0,
+    "hasBlockingFailures": false,
+    "failures": []
+  },
+  "durationMs": 1840,
+  "llmTokensUsed": 312
+}
+```
+
+When failures exist the `checkpointReport.failures` array is populated, giving the caller full visibility of what quality issues were found and passed to the LLM:
+
+```json
+"checkpointReport": {
+  "totalChecked": 4,
+  "passed": 2,
+  "failed": 2,
+  "hasBlockingFailures": true,
+  "failures": [
+    {
+      "checkpointId": "ent-regulatory-language",
+      "checkpointName": "Regulatory Language Compliance",
+      "scope": "ENTERPRISE",
+      "severity": "BLOCKING",
+      "failureReason": "Contains prohibited terms: 'should be', 'ASAP'"
+    },
+    {
+      "checkpointId": "domain-credit-field-refs",
+      "checkpointName": "Credit Domain Field Reference",
+      "scope": "DOMAIN",
+      "severity": "BLOCKING",
+      "failureReason": "No recognized credit field term found (LTV, DTI, FICO, etc.)"
+    }
+  ]
+}
+```
+
+### Rule Management
+
+```
+POST   /api/v1/rules                     Submit rule (intake only, no refinement)
+GET    /api/v1/rules/{id}                Rule with version history
+GET    /api/v1/rules/{id}/traces         All pipeline traces for this rule
+```
+
+### Checkpoint Management
+
+```
+GET    /api/v1/checkpoints               List all (filterable: ?scope=ENTERPRISE&domain=CREDIT)
+POST   /api/v1/checkpoints               Create checkpoint (JSON body matching schema)
+PUT    /api/v1/checkpoints/{id}          Update definition
+PUT    /api/v1/checkpoints/{id}/toggle   Enable / disable
+GET    /api/v1/checkpoints/{id}/stats    Failure frequency, top failing rules
+```
+
+### Test Harness
+
+```
+POST   /api/v1/test/run-scenario         Run named scenario vs live LLM
+GET    /api/v1/test/scenarios            List scenarios
+GET    /api/v1/test/results/{name}       Historical results + similarity scores
+```
+
+-----
+
+## 15. Security Considerations
+
+|Concern             |Approach                                                                                      |
+|--------------------|----------------------------------------------------------------------------------------------|
+|Authentication      |JWT bearer; `ROLE_LLM_USER` for pipeline execution, `ROLE_LLM_ADMIN` for checkpoint management|
+|API Keys            |Provider keys via env vars or HashiCorp Vault — never in code or config files                 |
+|Checkpoint authoring|`POST/PUT /api/v1/checkpoints` requires `ROLE_LLM_ADMIN`                                      |
+|PII in rule content |PII detection on `canonicalContent` before LLM call; offending fields masked in traces        |
+|Prompt injection    |`canonicalContent` sanitized before template binding — strips control characters              |
+|Audit               |`ExecutionTrace` records are append-only; JWT actor identity recorded on each trace           |
+|Rate limiting       |Bucket4j per API key; pipeline execution and checkpoint management use separate limits        |
+
+-----
+
+## 16. Dependency Reference
+
+```xml
+<properties>
+    <java.version>21</java.version>
+    <spring-boot.version>3.3.4</spring-boot.version>
+    <spring-ai.version>1.0.0</spring-ai.version>
+</properties>
+
+<dependencies>
+    <!-- Spring Boot Core -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-cache</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+
+    <!-- Spring AI -->
+    <dependency>
+        <groupId>org.springframework.ai</groupId>
+        <artifactId>spring-ai-openai-spring-boot-starter</artifactId>
+        <version>${spring-ai.version}</version>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.ai</groupId>
+        <artifactId>spring-ai-anthropic-spring-boot-starter</artifactId>
+        <version>${spring-ai.version}</version>
+    </dependency>
+
+    <!-- Templating -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-mustache</artifactId>
+    </dependency>
+
+    <!-- Observability -->
+    <dependency>
+        <groupId>io.micrometer</groupId>
+        <artifactId>micrometer-tracing-bridge-otel</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-exporter-otlp</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>io.micrometer</groupId>
+        <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+
+    <!-- Database -->
+    <dependency>
+        <groupId>org.postgresql</groupId>
+        <artifactId>postgresql</artifactId>
+        <scope>runtime</scope>
+    </dependency>
+    <dependency>
+        <groupId>com.h2database</groupId>
+        <artifactId>h2</artifactId>
+        <scope>test</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.flywaydb</groupId>
+        <artifactId>flyway-core</artifactId>
+    </dependency>
+
+    <!-- Cache -->
+    <dependency>
+        <groupId>com.github.ben-manes.caffeine</groupId>
+        <artifactId>caffeine</artifactId>
+    </dependency>
+
+    <!-- Rate Limiting -->
+    <dependency>
+        <groupId>com.bucket4j</groupId>
+        <artifactId>bucket4j-core</artifactId>
+        <version>8.10.1</version>
+    </dependency>
+
+    <!-- Testing -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-test</artifactId>
+        <scope>test</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.wiremock</groupId>
+        <artifactId>wiremock-spring-boot</artifactId>
+        <version>3.4.0</version>
+        <scope>test</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.security</groupId>
+        <artifactId>spring-security-test</artifactId>
+        <scope>test</scope>
+    </dependency>
+</dependencies>
+```
+
+-----
+
+## 17. Adding a New LLM Pipeline
+
+The service is built to grow. Adding a new pipeline (e.g., document summarization) requires only these steps — no changes to any shared infrastructure.
+
+**Step 1 — Add to the pipeline type enum**
+
+```java
+public enum PipelineType {
+    RULE_REFINEMENT,
+    SUMMARIZATION      // ← add here
+}
+```
+
+**Step 2 — Implement the Pipeline interface**
+
+```java
+@Component
+public class SummarizationPipeline implements Pipeline<SummarizationInput, SummarizationOutput> {
+
+    @Override
+    public PipelineType type() { return PipelineType.SUMMARIZATION; }
+
+    @Override
+    public PipelineResult execute(PipelineContext<SummarizationInput> ctx) {
+        // Uses same shared services:
+        // CheckpointEvaluationEngine, PromptAssembler, LlmRouter,
+        // JsonResponseParser, TraceService
+    }
+}
+```
+
+**Step 3 — Add prompt templates**
+
+```
+resources/prompts/templates/summarization.mustache
+```
+
+**Step 4 — Add checkpoints if needed (JSON only, no Java)**
+
+```
+resources/checkpoints/domain/operations/summary-length.json
+```
+
+**Step 5 — Add test scenarios**
+
+```
+test/resources/llm/scenarios/summarization-scenario-01.json
+```
+
+The `PipelineRegistry` discovers the new `@Component` automatically via Spring’s component scan. The `PipelineExecutor` routes to it by `PipelineType` with no code change.
+
+-----
+
+## 18. Glossary
+
+|Term                          |Definition                                                                                                                  |
+|------------------------------|----------------------------------------------------------------------------------------------------------------------------|
+|**Checkpoint**                |A declarative data quality standard defined in JSON. Evaluated against the raw rule **before** LLM refinement.              |
+|**CheckpointEvaluationReport**|Full result of evaluating a rule against all applicable scoped checkpoints, including every `CheckpointFailure`.            |
+|**CheckpointFailure**         |A single failed checkpoint — carries the failure reason and problematic value, which become LLM instructions.               |
+|**CheckpointScope**           |The level a checkpoint applies at: GENERIC (all rules), ENTERPRISE, DOMAIN/LOB, or RULE-specific.                           |
+|**CompiledPrompt**            |Fully rendered system + user message pair ready to send to the LLM.                                                         |
+|**Pipeline**                  |A named, self-contained LLM workflow. All share checkpoint, prompt, LLM, response, and trace infrastructure.                |
+|**PipelineExecutor**          |Routes a `PipelineContext` to the correct `Pipeline` and wraps execution in distributed tracing.                            |
+|**PipelineRegistry**          |Central map of `PipelineType → Pipeline` implementations. Populated via Spring component scan.                              |
+|**RefinementFeedback**        |Structured payload built from `CheckpointFailure` records and injected into the LLM prompt as fix instructions.             |
+|**RuleIntakeService**         |Stage 1 — accepts raw rule, standardizes format, persists as `DRAFT`.                                                       |
+|**StructuredResponse**        |Typed, validated wrapper around the LLM’s parsed JSON output.                                                               |
+|**Virtual Threads**           |Java 21 Project Loom — high-concurrency I/O without reactive programming, enabled via `spring.threads.virtual.enabled=true`.|
+
+-----
+
+*Document version 3.0 — Java 21 / Spring Boot 3.x / Spring AI 1.x*
+*Flow: Rule Intake → Checkpoint Evaluation → Rule Refinement (LLM) → Output*
+*Checkpoints evaluate raw rule first; failures become LLM instructions*
