@@ -1,0 +1,1951 @@
+# LLM Communication Microservice — Python Architecture & Design Guide
+
+> **Stack:** Python 3.12 · FastAPI · Pydantic v2 · SQLAlchemy 2.x · Alembic · LangChain / LiteLLM · AsyncIO · Pytest
+> 
+> **Design Philosophy:** Pipeline-first, provider-agnostic, checkpoint-driven quality gate before LLM refinement. Async throughout. Built to scale — new LLM pipelines plug in without touching existing infrastructure.
+
+-----
+
+## Table of Contents
+
+1. [Overview & Core Concepts](#1-overview--core-concepts)
+1. [Pipeline Flow](#2-pipeline-flow)
+1. [Project Structure](#3-project-structure)
+1. [Architecture Principles](#4-architecture-principles)
+1. [Core Domain Model](#5-core-domain-model)
+1. [Checkpoint System](#6-checkpoint-system)
+1. [Rule Refinement Layer](#7-rule-refinement-layer)
+1. [Prompt Engineering Layer](#8-prompt-engineering-layer)
+1. [LLM Communication Layer](#9-llm-communication-layer)
+1. [Structured Response & Output](#10-structured-response--output)
+1. [Traceability & Observability](#11-traceability--observability)
+1. [Testing Strategy](#12-testing-strategy)
+1. [Configuration & Profiles](#13-configuration--profiles)
+1. [API Reference](#14-api-reference)
+1. [Security Considerations](#15-security-considerations)
+1. [Dependency Reference](#16-dependency-reference)
+1. [Adding a New LLM Pipeline](#17-adding-a-new-llm-pipeline)
+1. [Glossary](#18-glossary)
+
+-----
+
+## 1. Overview & Core Concepts
+
+This microservice is the **intelligent intermediary** between your domain applications and one or more LLM providers. It is designed as a **generic, async pipeline-based platform** — rule refinement is the first pipeline, with the architecture ready to host any number of LLM workflows without structural change.
+
+### What a Checkpoint Is
+
+> A **Checkpoint** is a named **data quality standard** that an ingested rule is evaluated against **before** it reaches the LLM refinement stage. Checkpoints are declarative JSON specifications — non-developers can author and manage them without writing Python.
+
+Checkpoints answer: *“Does this rule meet the required standards before we ask the LLM to refine it?”*
+
+If a rule fails one or more checkpoints, the failures are compiled into a structured feedback payload and passed directly into the LLM refinement prompt so the model knows exactly what to fix.
+
+### Checkpoint Scopes
+
+|Scope            |Description                               |Example                                      |
+|-----------------|------------------------------------------|---------------------------------------------|
+|**Generic**      |Global quality gates applied to every rule|Min length, no placeholder text              |
+|**Enterprise**   |Standards owned by enterprise governance  |Regulatory language, mandatory clauses       |
+|**Domain / LOB** |Standards for a specific business domain  |Domain terminology, required field references|
+|**Rule-specific**|Overrides tied to one particular rule     |Custom constraint for a legacy rule          |
+
+### Python vs Java — Key Differences in This Design
+
+|Concern             |Java Approach                     |Python Approach                                                   |
+|--------------------|----------------------------------|------------------------------------------------------------------|
+|Concurrency         |Virtual Threads (Project Loom)    |`asyncio` + `async/await` throughout                              |
+|Immutable records   |Java `record`                     |Pydantic `BaseModel` with `model_config = ConfigDict(frozen=True)`|
+|Dependency injection|Spring `@Component` / `@Autowired`|`dependency-injector` library or FastAPI `Depends()`              |
+|ORM                 |Spring Data JPA                   |SQLAlchemy 2.x async with `AsyncSession`                          |
+|DB migrations       |Flyway                            |Alembic                                                           |
+|Templating          |Mustache                          |Jinja2                                                            |
+|LLM abstraction     |Spring AI                         |LiteLLM (multi-provider) or LangChain                             |
+|Schema validation   |Bean Validation + Jackson         |Pydantic v2                                                       |
+|Testing             |JUnit 5 + WireMock                |Pytest + `respx` (async HTTP mocking)                             |
+
+-----
+
+## 2. Pipeline Flow
+
+### 2.1 The Four Stages
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          RULE REFINEMENT PIPELINE                               │
+│                                                                                 │
+│   ┌──────────────┐    ┌─────────────────────┐    ┌──────────────────┐          │
+│   │  1. RULE     │    │  2. CHECKPOINT       │    │  3. RULE         │          │
+│   │  INTAKE      │───►│  EVALUATION          │───►│  REFINEMENT      │          │
+│   │              │    │                      │    │  (LLM)           │          │
+│   └──────────────┘    └─────────────────────┘    └──────────────────┘          │
+│          │                      │                         │                     │
+│   Accept raw rule         Evaluate against          LLM refines rule            │
+│   Standardize format      all scoped checkpoints    using failures as           │
+│   Validate structure      Compile failure report    context / instructions      │
+│                                 │                         │                     │
+│                         ┌───────┴───────┐                 │                     │
+│                       PASS            FAIL                │                     │
+│                         │               │                 │                     │
+│                         │         Attach failure          │                     │
+│                         │         report to LLM ─────────┘                     │
+│                         │         refinement request                            │
+│                         │                                                       │
+│                         │                         ┌──────────────────┐          │
+│                         └────────────────────────►│  4. OUTPUT       │          │
+│                                                   │                  │          │
+│                                                   │  Structured JSON │          │
+│                                                   │  Refined rule    │          │
+│                                                   │  Checkpoint rpt  │          │
+│                                                   │  Trace ID        │          │
+│                                                   └──────────────────┘          │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 2.2 Async Flow
+
+```
+POST /api/v1/pipelines/execute
+         │
+         ▼  (FastAPI async route)
+  PipelineExecutor.execute()          ← async
+         │
+         ├── await intake_service.ingest(request)
+         │
+         ├── await checkpoint_engine.evaluate(rule)
+         │       └── gathers all scoped checkpoints
+         │           runs evaluators (sync or async)
+         │           returns CheckpointEvaluationReport
+         │
+         ├── feedback = feedback_builder.build(rule, report)
+         │
+         ├── await llm_refiner.refine(rule, feedback, options)
+         │       └── await llm_router.complete(prompt)
+         │
+         └── return PipelineExecutionResponse
+```
+
+-----
+
+## 3. Project Structure
+
+```
+llm-service/
+├── pyproject.toml                     # PEP 517/518 — dependencies + tool config
+├── README.md
+├── docker-compose.yml
+├── .env.example
+├── alembic.ini
+│
+├── src/
+│   └── llm_service/
+│       │
+│       ├── main.py                    # FastAPI app factory
+│       │
+│       ├── config/
+│       │   ├── __init__.py
+│       │   ├── settings.py            # Pydantic BaseSettings — env var loading
+│       │   └── logging.py             # structlog JSON config
+│       │
+│       ├── api/                       # HTTP layer
+│       │   ├── __init__.py
+│       │   ├── router.py              # Registers all routers on the FastAPI app
+│       │   ├── routes/
+│       │   │   ├── pipeline.py        # POST /api/v1/pipelines/execute
+│       │   │   ├── rules.py
+│       │   │   ├── checkpoints.py
+│       │   │   └── test_harness.py
+│       │   ├── schemas/               # Pydantic request/response schemas
+│       │   │   ├── requests/
+│       │   │   │   ├── rule_intake.py
+│       │   │   │   ├── pipeline_execution.py
+│       │   │   │   └── checkpoint_definition.py
+│       │   │   └── responses/
+│       │   │       ├── pipeline_execution_response.py
+│       │   │       ├── checkpoint_evaluation_response.py
+│       │   │       └── rule_refinement_response.py
+│       │   └── middleware/
+│       │       ├── correlation_id.py  # Injects X-Correlation-Id into request state
+│       │       └── error_handler.py
+│       │
+│       ├── domain/                    # Core domain — zero framework dependencies
+│       │   ├── __init__.py
+│       │   ├── pipeline/
+│       │   │   ├── pipeline.py        # Abstract base class — all pipelines implement this
+│       │   │   ├── pipeline_context.py
+│       │   │   ├── pipeline_result.py
+│       │   │   └── pipeline_type.py   # Enum
+│       │   ├── rule/
+│       │   │   ├── rule.py            # Frozen Pydantic model
+│       │   │   ├── rule_set.py
+│       │   │   ├── rule_version.py
+│       │   │   ├── rule_status.py     # Enum
+│       │   │   └── refinement_feedback.py
+│       │   ├── checkpoint/
+│       │   │   ├── checkpoint_definition.py    # Frozen Pydantic model
+│       │   │   ├── checkpoint_scope.py         # Enum
+│       │   │   ├── checkpoint_severity.py      # Enum
+│       │   │   ├── checkpoint_result.py
+│       │   │   ├── checkpoint_failure.py
+│       │   │   └── checkpoint_evaluation_report.py
+│       │   ├── prompt/
+│       │   │   ├── prompt_template.py
+│       │   │   ├── prompt_context.py
+│       │   │   └── compiled_prompt.py
+│       │   └── trace/
+│       │       ├── execution_trace.py
+│       │       └── trace_event.py
+│       │
+│       ├── pipeline/                  # Pipeline framework (generic, shared)
+│       │   ├── __init__.py
+│       │   ├── registry.py            # PipelineRegistry — maps PipelineType → Pipeline
+│       │   ├── executor.py            # PipelineExecutor — routes + wraps tracing
+│       │   └── impl/
+│       │       └── rule_refinement_pipeline.py   # Orchestrates all 4 stages
+│       │
+│       ├── intake/                    # Stage 1: Rule Intake
+│       │   ├── __init__.py
+│       │   ├── rule_intake_service.py
+│       │   ├── rule_standardizer.py   # Protocol (interface)
+│       │   └── canonical_rule_mapper.py
+│       │
+│       ├── checkpoint/                # Stage 2: Checkpoint Evaluation
+│       │   ├── __init__.py
+│       │   ├── loader/
+│       │   │   ├── checkpoint_loader.py        # Reads JSON files from disk
+│       │   │   └── checkpoint_definition_mapper.py
+│       │   ├── registry/
+│       │   │   └── checkpoint_registry.py      # Scoped in-memory store
+│       │   ├── evaluator/
+│       │   │   ├── checkpoint_evaluator.py     # Protocol (interface)
+│       │   │   ├── length_evaluator.py
+│       │   │   ├── regex_evaluator.py
+│       │   │   ├── contains_evaluator.py
+│       │   │   ├── llm_evaluator.py
+│       │   │   ├── jsonpath_evaluator.py
+│       │   │   └── checkpoint_evaluation_engine.py
+│       │   └── feedback/
+│       │       └── refinement_feedback_builder.py
+│       │
+│       ├── refinement/                # Stage 3: Rule Refinement (LLM)
+│       │   ├── __init__.py
+│       │   ├── rule_refiner.py        # Protocol (interface)
+│       │   ├── llm_rule_refiner.py
+│       │   └── refined_rule_mapper.py
+│       │
+│       ├── prompt/                    # Shared across all pipelines
+│       │   ├── __init__.py
+│       │   ├── assembler/
+│       │   │   ├── prompt_assembler.py        # Protocol
+│       │   │   └── default_prompt_assembler.py
+│       │   ├── template/
+│       │   │   ├── template_registry.py
+│       │   │   ├── template_loader.py
+│       │   │   └── template_renderer.py       # Jinja2
+│       │   └── context/
+│       │       ├── context_builder.py
+│       │       └── context_enricher.py        # Protocol — enricher chain
+│       │
+│       ├── llm/                       # Shared LLM provider abstraction
+│       │   ├── __init__.py
+│       │   ├── client/
+│       │   │   ├── llm_client.py      # Protocol (interface)
+│       │   │   ├── openai_client.py
+│       │   │   ├── anthropic_client.py
+│       │   │   └── litellm_client.py  # Multi-provider via LiteLLM
+│       │   ├── router/
+│       │   │   ├── llm_router.py
+│       │   │   └── routing_strategy.py  # Enum
+│       │   ├── retry/
+│       │   │   └── llm_retry_policy.py  # tenacity-based
+│       │   └── models/
+│       │       ├── llm_request.py
+│       │       └── llm_raw_response.py
+│       │
+│       ├── response/                  # Shared structured response parsing
+│       │   ├── __init__.py
+│       │   ├── parser/
+│       │   │   ├── response_parser.py  # Protocol
+│       │   │   └── json_response_parser.py
+│       │   ├── validator/
+│       │   │   └── schema_validator.py
+│       │   └── models/
+│       │       └── structured_response.py
+│       │
+│       ├── trace/                     # Shared traceability
+│       │   ├── __init__.py
+│       │   ├── trace_service.py
+│       │   ├── trace_repository.py
+│       │   └── trace_event_publisher.py
+│       │
+│       ├── db/                        # Database layer
+│       │   ├── __init__.py
+│       │   ├── session.py             # AsyncSession factory
+│       │   ├── base.py                # SQLAlchemy declarative base
+│       │   └── models/
+│       │       ├── rule_orm.py
+│       │       ├── rule_version_orm.py
+│       │       ├── checkpoint_orm.py
+│       │       └── execution_trace_orm.py
+│       │
+│       └── dependencies.py            # FastAPI Depends() wiring
+│
+├── alembic/
+│   ├── env.py
+│   └── versions/
+│       ├── 0001_init_rules.py
+│       ├── 0002_init_traces.py
+│       └── 0003_init_checkpoints.py
+│
+├── resources/
+│   ├── prompts/
+│   │   ├── rule_refinement.j2                    # Standard refinement (no failures)
+│   │   └── rule_refinement_with_feedback.j2      # Targeted fix (failures present)
+│   └── checkpoints/
+│       ├── generic/
+│       │   ├── min_length.json
+│       │   ├── no_placeholder_text.json
+│       │   └── valid_syntax.json
+│       ├── enterprise/
+│       │   ├── regulatory_language.json
+│       │   └── mandatory_clause.json
+│       └── domain/
+│           ├── credit/
+│           │   └── credit_field_references.json
+│           └── fraud/
+│               └── fraud_terminology.json
+│
+└── tests/
+    ├── conftest.py                    # Shared fixtures, async test client, mock DB
+    ├── unit/
+    │   ├── intake/
+    │   │   └── test_rule_standardizer.py
+    │   ├── checkpoint/
+    │   │   ├── test_checkpoint_evaluation_engine.py
+    │   │   ├── test_checkpoint_registry.py
+    │   │   └── test_refinement_feedback_builder.py
+    │   ├── refinement/
+    │   │   └── test_llm_rule_refiner.py
+    │   └── response/
+    │       └── test_json_response_parser.py
+    ├── integration/
+    │   ├── test_rule_refinement_pipeline.py      # Full 4-stage, mocked LLM
+    │   ├── test_checkpoint_scope_resolution.py
+    │   └── test_checkpoint_feedback_to_llm.py   # Verifies failures reach LLM prompt
+    └── llm/                                     # Real LLM tests (env-gated)
+        ├── conftest.py
+        ├── harness/
+        │   ├── llm_test_harness.py
+        │   └── prompt_scenario.py
+        ├── prompt/
+        │   ├── test_prompt_refinement.py
+        │   └── test_prompt_regression.py
+        ├── model/
+        │   ├── test_model_refinement.py
+        │   └── test_model_comparison.py
+        └── fixtures/
+            ├── scenarios/
+            │   ├── clean_rule_no_failures.json
+            │   ├── rule_with_enterprise_failures.json
+            │   └── rule_with_domain_failures.json
+            └── expected/
+                └── clean_rule_output.json
+```
+
+-----
+
+## 4. Architecture Principles
+
+### 4.1 Async First
+
+Every I/O-bound operation — LLM calls, database reads, checkpoint file loading — is `async`. FastAPI routes are async. SQLAlchemy uses `AsyncSession`. LLM clients use `httpx.AsyncClient`. This allows high concurrency without threads.
+
+### 4.2 Protocols as Interfaces
+
+Python `typing.Protocol` is used instead of abstract base classes for all integration boundaries (`LlmClient`, `RuleStandardizer`, `CheckpointEvaluator`, `RuleRefiner`, `PromptAssembler`). This enables structural subtyping — implementations don’t need to inherit, they just need to match the shape.
+
+```python
+from typing import Protocol, runtime_checkable
+
+@runtime_checkable
+class LlmClient(Protocol):
+    async def complete(self, request: LlmRequest) -> LlmRawResponse: ...
+    def is_available(self) -> bool: ...
+```
+
+### 4.3 Frozen Pydantic Models as Value Objects
+
+Domain objects are **immutable Pydantic models** with `frozen=True`. This prevents accidental mutation as data flows through pipeline stages.
+
+```python
+from pydantic import BaseModel, ConfigDict
+
+class Rule(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    id: UUID
+    canonical_content: str
+    ...
+```
+
+### 4.4 Dependency Injection via FastAPI `Depends()`
+
+Service dependencies are wired at the route level using FastAPI’s `Depends()`. This makes unit testing trivial — swap any dependency with a mock by overriding the dependency in the test client.
+
+### 4.5 Checkpoints Before LLM
+
+Checkpoint evaluation happens on the **raw standardized rule**, before any LLM call. Failures become structured LLM instructions. No tokens are spent refining a rule that hasn’t been quality-assessed first.
+
+-----
+
+## 5. Core Domain Model
+
+### 5.1 Rule
+
+```python
+# domain/rule/rule.py
+from __future__ import annotations
+from datetime import datetime
+from enum import Enum
+from typing import Any
+from uuid import UUID, uuid4
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class RuleStatus(str, Enum):
+    DRAFT              = "DRAFT"
+    ACTIVE             = "ACTIVE"
+    REFINEMENT_FAILED  = "REFINEMENT_FAILED"
+
+
+class Rule(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID = Field(default_factory=uuid4)
+    name: str
+    description: str | None = None
+    raw_content: str                     # original as submitted
+    canonical_content: str               # standardized by RuleIntakeService
+    status: RuleStatus = RuleStatus.DRAFT
+    version: int = 1
+    enterprise_id: str | None = None     # used for ENTERPRISE checkpoint scope
+    domain_id: str | None = None         # used for DOMAIN checkpoint scope
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+```
+
+### 5.2 Checkpoint Domain Objects
+
+```python
+# domain/checkpoint/checkpoint_definition.py
+from enum import Enum
+from typing import Any
+from pydantic import BaseModel, ConfigDict
+
+
+class CheckpointScope(str, Enum):
+    GENERIC    = "GENERIC"
+    ENTERPRISE = "ENTERPRISE"
+    DOMAIN     = "DOMAIN"
+    RULE       = "RULE"
+
+
+class CheckpointSeverity(str, Enum):
+    BLOCKING = "BLOCKING"
+    WARNING  = "WARNING"
+
+
+class CheckpointDefinition(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    name: str
+    description: str
+    scope: CheckpointScope
+    severity: CheckpointSeverity
+    scope_owner_id: str | None = None    # None=GENERIC; else enterpriseId/domainId/ruleId
+    evaluation_type: str                 # LENGTH | REGEX | CONTAINS | LLM_EVAL | JSONPATH
+    parameters: dict[str, Any]
+    active: bool = True
+    evaluation_order: int = 0
+
+
+# domain/checkpoint/checkpoint_failure.py
+class CheckpointFailure(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    checkpoint_id: str
+    checkpoint_name: str
+    scope: CheckpointScope
+    severity: CheckpointSeverity
+    failure_reason: str         # plain language — fed directly to LLM
+    evaluated_value: str        # snippet that triggered the failure
+
+
+# domain/checkpoint/checkpoint_evaluation_report.py
+from datetime import datetime
+from uuid import UUID
+
+class CheckpointEvaluationReport(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    rule_id: UUID
+    total_checked: int
+    passed: int
+    failed: int
+    has_blocking_failures: bool
+    failures: list[CheckpointFailure]
+    evaluated_at: datetime = Field(default_factory=datetime.utcnow)
+```
+
+### 5.3 Refinement Feedback
+
+```python
+# domain/rule/refinement_feedback.py
+from uuid import UUID
+from pydantic import BaseModel, ConfigDict
+from llm_service.domain.checkpoint.checkpoint_failure import CheckpointFailure
+
+
+class RefinementFeedback(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    rule_id: UUID
+    has_failures: bool
+    failures: list[CheckpointFailure]
+    feedback_narrative: str   # structured text injected into LLM prompt
+
+    @classmethod
+    def none(cls, rule_id: UUID) -> "RefinementFeedback":
+        return cls(
+            rule_id=rule_id,
+            has_failures=False,
+            failures=[],
+            feedback_narrative=""
+        )
+```
+
+### 5.4 Pipeline Abstractions
+
+```python
+# domain/pipeline/pipeline.py
+from abc import ABC, abstractmethod
+from typing import Generic, TypeVar
+from llm_service.domain.pipeline.pipeline_context import PipelineContext
+from llm_service.domain.pipeline.pipeline_result import PipelineResult
+
+I = TypeVar("I")
+O = TypeVar("O")
+
+
+class Pipeline(ABC, Generic[I, O]):
+
+    @property
+    @abstractmethod
+    def pipeline_type(self) -> "PipelineType": ...
+
+    @abstractmethod
+    async def execute(self, context: PipelineContext[I]) -> PipelineResult[O]: ...
+```
+
+-----
+
+## 6. Checkpoint System
+
+### 6.1 JSON Checkpoint Format
+
+```json
+// resources/checkpoints/generic/min_length.json
+{
+  "id": "generic-min-length",
+  "name": "Minimum Rule Length",
+  "description": "Canonical rule content must be at least 20 characters",
+  "scope": "GENERIC",
+  "severity": "BLOCKING",
+  "scope_owner_id": null,
+  "evaluation_type": "LENGTH",
+  "parameters": {
+    "min_length": 20,
+    "field": "canonical_content"
+  },
+  "active": true,
+  "evaluation_order": 1
+}
+```
+
+```json
+// resources/checkpoints/enterprise/regulatory_language.json
+{
+  "id": "ent-regulatory-language",
+  "name": "Regulatory Language Compliance",
+  "description": "Rule must not contain informal or prohibited terms",
+  "scope": "ENTERPRISE",
+  "severity": "BLOCKING",
+  "scope_owner_id": "ENTERPRISE_GLOBAL",
+  "evaluation_type": "REGEX",
+  "parameters": {
+    "prohibited_patterns": ["should be", "might", "ASAP", "TBD", "etc\\."],
+    "field": "canonical_content"
+  },
+  "active": true,
+  "evaluation_order": 10
+}
+```
+
+```json
+// resources/checkpoints/domain/credit/credit_field_references.json
+{
+  "id": "domain-credit-field-refs",
+  "name": "Credit Domain Field Reference",
+  "description": "Credit rules must reference at least one recognized credit field",
+  "scope": "DOMAIN",
+  "severity": "BLOCKING",
+  "scope_owner_id": "DOMAIN_CREDIT",
+  "evaluation_type": "CONTAINS",
+  "parameters": {
+    "required_terms": ["LTV", "DTI", "FICO", "credit score", "bureau"],
+    "min_matches": 1,
+    "field": "canonical_content"
+  },
+  "active": true,
+  "evaluation_order": 5
+}
+```
+
+### 6.2 Checkpoint Loader
+
+```python
+# checkpoint/loader/checkpoint_loader.py
+import json
+from pathlib import Path
+from llm_service.domain.checkpoint.checkpoint_definition import CheckpointDefinition
+
+
+class CheckpointLoader:
+
+    def __init__(self, config_directory: str) -> None:
+        self._directory = Path(config_directory)
+
+    def load_all(self) -> list[CheckpointDefinition]:
+        checkpoints = []
+        for json_file in self._directory.rglob("*.json"):
+            data = json.loads(json_file.read_text(encoding="utf-8"))
+            checkpoints.append(CheckpointDefinition(**data))
+        return [cp for cp in checkpoints if cp.active]
+```
+
+### 6.3 Checkpoint Registry
+
+```python
+# checkpoint/registry/checkpoint_registry.py
+from llm_service.domain.checkpoint.checkpoint_definition import (
+    CheckpointDefinition, CheckpointScope
+)
+from llm_service.domain.rule.rule import Rule
+
+
+class CheckpointRegistry:
+
+    def __init__(self, checkpoints: list[CheckpointDefinition]) -> None:
+        self._checkpoints = checkpoints
+
+    def resolve_for(self, rule: Rule) -> list[CheckpointDefinition]:
+        """Return all applicable checkpoints for a rule, sorted by evaluation_order."""
+        applicable = [
+            cp for cp in self._checkpoints
+            if self._applies(cp, rule)
+        ]
+        return sorted(applicable, key=lambda cp: cp.evaluation_order)
+
+    def _applies(self, cp: CheckpointDefinition, rule: Rule) -> bool:
+        match cp.scope:
+            case CheckpointScope.GENERIC:
+                return True
+            case CheckpointScope.ENTERPRISE:
+                return cp.scope_owner_id == rule.enterprise_id
+            case CheckpointScope.DOMAIN:
+                return cp.scope_owner_id == rule.domain_id
+            case CheckpointScope.RULE:
+                return cp.scope_owner_id == str(rule.id)
+            case _:
+                return False
+```
+
+### 6.4 Checkpoint Evaluator Protocol & Implementations
+
+```python
+# checkpoint/evaluator/checkpoint_evaluator.py
+from typing import Protocol
+from llm_service.domain.checkpoint.checkpoint_definition import CheckpointDefinition
+from llm_service.domain.checkpoint.checkpoint_result import CheckpointResult
+from llm_service.domain.rule.rule import Rule
+
+
+class CheckpointEvaluator(Protocol):
+    evaluation_type: str
+
+    async def evaluate(
+        self, rule: Rule, checkpoint: CheckpointDefinition
+    ) -> CheckpointResult: ...
+
+
+# checkpoint/evaluator/length_evaluator.py
+class LengthEvaluator:
+    evaluation_type = "LENGTH"
+
+    async def evaluate(self, rule: Rule, cp: CheckpointDefinition) -> CheckpointResult:
+        field   = cp.parameters.get("field", "canonical_content")
+        value   = getattr(rule, field, "")
+        length  = len(value)
+        min_len = cp.parameters.get("min_length")
+        max_len = cp.parameters.get("max_length")
+
+        if min_len and length < min_len:
+            return CheckpointResult(
+                passed=False,
+                failure_reason=f"Content is {length} chars, minimum is {min_len}",
+                evaluated_value=value[:100]
+            )
+        if max_len and length > max_len:
+            return CheckpointResult(
+                passed=False,
+                failure_reason=f"Content is {length} chars, maximum is {max_len}",
+                evaluated_value=value[:100]
+            )
+        return CheckpointResult(passed=True)
+
+
+# checkpoint/evaluator/regex_evaluator.py
+import re
+
+class RegexEvaluator:
+    evaluation_type = "REGEX"
+
+    async def evaluate(self, rule: Rule, cp: CheckpointDefinition) -> CheckpointResult:
+        field    = cp.parameters.get("field", "canonical_content")
+        value    = getattr(rule, field, "")
+        patterns = cp.parameters.get("prohibited_patterns", [])
+
+        for pattern in patterns:
+            match = re.search(pattern, value, re.IGNORECASE)
+            if match:
+                return CheckpointResult(
+                    passed=False,
+                    failure_reason=f"Contains prohibited term '{match.group()}'",
+                    evaluated_value=match.group()
+                )
+        return CheckpointResult(passed=True)
+
+
+# checkpoint/evaluator/contains_evaluator.py
+class ContainsEvaluator:
+    evaluation_type = "CONTAINS"
+
+    async def evaluate(self, rule: Rule, cp: CheckpointDefinition) -> CheckpointResult:
+        field        = cp.parameters.get("field", "canonical_content")
+        value        = getattr(rule, field, "").lower()
+        required     = cp.parameters.get("required_terms", [])
+        min_matches  = cp.parameters.get("min_matches", 1)
+        found        = [t for t in required if t.lower() in value]
+
+        if len(found) < min_matches:
+            return CheckpointResult(
+                passed=False,
+                failure_reason=(
+                    f"No recognized term found. Expected at least {min_matches} of: "
+                    f"{', '.join(required)}"
+                ),
+                evaluated_value=value[:100]
+            )
+        return CheckpointResult(passed=True)
+```
+
+### 6.5 Checkpoint Evaluation Engine
+
+```python
+# checkpoint/evaluator/checkpoint_evaluation_engine.py
+import asyncio
+from datetime import datetime
+from llm_service.domain.checkpoint.checkpoint_evaluation_report import CheckpointEvaluationReport
+from llm_service.domain.checkpoint.checkpoint_failure import CheckpointFailure
+from llm_service.domain.checkpoint.checkpoint_severity import CheckpointSeverity
+from llm_service.domain.rule.rule import Rule
+from llm_service.checkpoint.registry.checkpoint_registry import CheckpointRegistry
+from llm_service.checkpoint.evaluator.checkpoint_evaluator import CheckpointEvaluator
+
+
+class CheckpointEvaluationEngine:
+
+    def __init__(
+        self,
+        registry: CheckpointRegistry,
+        evaluators: list[CheckpointEvaluator]
+    ) -> None:
+        self._registry   = registry
+        self._evaluators = {e.evaluation_type: e for e in evaluators}
+
+    async def evaluate(self, rule: Rule) -> CheckpointEvaluationReport:
+        applicable = self._registry.resolve_for(rule)
+
+        # Run all evaluations concurrently
+        tasks   = [self._run(rule, cp) for cp in applicable]
+        results = await asyncio.gather(*tasks)
+
+        failures = [r for r in results if r is not None]
+        has_blocking = any(
+            f.severity == CheckpointSeverity.BLOCKING for f in failures
+        )
+
+        return CheckpointEvaluationReport(
+            rule_id=rule.id,
+            total_checked=len(applicable),
+            passed=len(applicable) - len(failures),
+            failed=len(failures),
+            has_blocking_failures=has_blocking,
+            failures=failures,
+            evaluated_at=datetime.utcnow()
+        )
+
+    async def _run(
+        self, rule: Rule, cp
+    ) -> CheckpointFailure | None:
+        evaluator = self._evaluators.get(cp.evaluation_type)
+        if not evaluator:
+            return None
+        result = await evaluator.evaluate(rule, cp)
+        if not result.passed:
+            return CheckpointFailure(
+                checkpoint_id=cp.id,
+                checkpoint_name=cp.name,
+                scope=cp.scope,
+                severity=cp.severity,
+                failure_reason=result.failure_reason,
+                evaluated_value=result.evaluated_value or ""
+            )
+        return None
+```
+
+### 6.6 Refinement Feedback Builder
+
+```python
+# checkpoint/feedback/refinement_feedback_builder.py
+from llm_service.domain.checkpoint.checkpoint_evaluation_report import CheckpointEvaluationReport
+from llm_service.domain.checkpoint.checkpoint_severity import CheckpointSeverity
+from llm_service.domain.rule.refinement_feedback import RefinementFeedback
+from llm_service.domain.rule.rule import Rule
+
+
+class RefinementFeedbackBuilder:
+
+    def build(
+        self, rule: Rule, report: CheckpointEvaluationReport
+    ) -> RefinementFeedback:
+        if not report.has_blocking_failures:
+            return RefinementFeedback.none(rule.id)
+
+        blocking = [
+            f for f in report.failures
+            if f.severity == CheckpointSeverity.BLOCKING
+        ]
+        return RefinementFeedback(
+            rule_id=rule.id,
+            has_failures=True,
+            failures=blocking,
+            feedback_narrative=self._build_narrative(blocking)
+        )
+
+    def _build_narrative(self, failures) -> str:
+        lines = [
+            "The following data quality standards were not met. "
+            "You MUST rewrite the rule to satisfy each one:\n"
+        ]
+        for i, f in enumerate(failures, 1):
+            lines.append(
+                f"{i}. [{f.scope.value}] {f.checkpoint_name}\n"
+                f"   Issue: {f.failure_reason}\n"
+                f"   Problematic value: \"{f.evaluated_value}\"\n"
+            )
+        return "\n".join(lines)
+```
+
+-----
+
+## 7. Rule Refinement Layer
+
+### 7.1 Rule Refinement Pipeline (Orchestrator)
+
+```python
+# pipeline/impl/rule_refinement_pipeline.py
+import structlog
+from llm_service.domain.pipeline.pipeline import Pipeline
+from llm_service.domain.pipeline.pipeline_context import PipelineContext
+from llm_service.domain.pipeline.pipeline_result import PipelineResult
+from llm_service.domain.pipeline.pipeline_type import PipelineType
+from llm_service.intake.rule_intake_service import RuleIntakeService
+from llm_service.checkpoint.evaluator.checkpoint_evaluation_engine import CheckpointEvaluationEngine
+from llm_service.checkpoint.feedback.refinement_feedback_builder import RefinementFeedbackBuilder
+from llm_service.refinement.llm_rule_refiner import LlmRuleRefiner
+from llm_service.trace.trace_service import TraceService
+
+log = structlog.get_logger()
+
+
+class RuleRefinementPipeline(Pipeline):
+
+    pipeline_type = PipelineType.RULE_REFINEMENT
+
+    def __init__(
+        self,
+        intake_service: RuleIntakeService,
+        checkpoint_engine: CheckpointEvaluationEngine,
+        feedback_builder: RefinementFeedbackBuilder,
+        refiner: LlmRuleRefiner,
+        trace_service: TraceService,
+    ) -> None:
+        self._intake     = intake_service
+        self._checkpoints = checkpoint_engine
+        self._feedback   = feedback_builder
+        self._refiner    = refiner
+        self._trace      = trace_service
+
+    async def execute(self, context: PipelineContext) -> PipelineResult:
+        trace = await self._trace.start(PipelineType.RULE_REFINEMENT, context.correlation_id)
+
+        try:
+            # ── Stage 1: Rule Intake ──────────────────────────────────────
+            log.info("stage_1_intake", correlation_id=context.correlation_id)
+            rule = await self._intake.ingest(context.input)
+            await self._trace.record(trace, "RULE_INTAKE", {"rule_id": str(rule.id)})
+
+            # ── Stage 2: Checkpoint Evaluation ────────────────────────────
+            log.info("stage_2_checkpoint_evaluation", rule_id=str(rule.id))
+            report   = await self._checkpoints.evaluate(rule)
+            feedback = self._feedback.build(rule, report)
+            await self._trace.record(trace, "CHECKPOINT_EVALUATION", {
+                "total_checked": report.total_checked,
+                "failed": report.failed,
+                "has_blocking": report.has_blocking_failures,
+            })
+
+            log.info(
+                "checkpoint_result",
+                passed=report.passed,
+                failed=report.failed,
+                has_blocking=report.has_blocking_failures
+            )
+
+            # ── Stage 3: Rule Refinement (LLM) ────────────────────────────
+            log.info("stage_3_llm_refinement", feedback_present=feedback.has_failures)
+            refined_rule = await self._refiner.refine(rule, feedback, context.model_options)
+            await self._trace.record(trace, "REFINEMENT_COMPLETE", {
+                "version": refined_rule.version,
+                "status": refined_rule.status.value,
+            })
+
+            # ── Stage 4: Output ───────────────────────────────────────────
+            await self._trace.succeed(trace)
+            return PipelineResult(
+                success=True,
+                refined_rule=refined_rule,
+                checkpoint_report=report,
+                trace_id=trace.trace_id,
+            )
+
+        except Exception as exc:
+            await self._trace.fail(trace, exc)
+            raise
+```
+
+### 7.2 LLM Rule Refiner
+
+```python
+# refinement/llm_rule_refiner.py
+from llm_service.domain.rule.rule import Rule
+from llm_service.domain.rule.refinement_feedback import RefinementFeedback
+from llm_service.prompt.assembler.default_prompt_assembler import DefaultPromptAssembler
+from llm_service.llm.router.llm_router import LlmRouter
+from llm_service.response.parser.json_response_parser import JsonResponseParser
+from llm_service.refinement.refined_rule_mapper import RefinedRuleMapper
+
+
+class LlmRuleRefiner:
+
+    def __init__(
+        self,
+        assembler: DefaultPromptAssembler,
+        router: LlmRouter,
+        parser: JsonResponseParser,
+        mapper: RefinedRuleMapper,
+    ) -> None:
+        self._assembler = assembler
+        self._router    = router
+        self._parser    = parser
+        self._mapper    = mapper
+
+    async def refine(
+        self, rule: Rule, feedback: RefinementFeedback, options
+    ) -> Rule:
+        template_id = (
+            "rule_refinement_with_feedback"
+            if feedback.has_failures
+            else "rule_refinement"
+        )
+
+        context = {
+            "template_id": template_id,
+            "variables": {
+                "rule": rule.model_dump(),
+                "feedback": feedback.model_dump(),
+            }
+        }
+
+        compiled = await self._assembler.assemble(context)
+        client   = self._router.route(options)
+        raw      = await client.complete(compiled)
+        parsed   = self._parser.parse(raw.content, target_type=RefinedRuleOutput)
+
+        return self._mapper.apply(rule, parsed.payload)
+```
+
+-----
+
+## 8. Prompt Engineering Layer
+
+### 8.1 Standard Refinement Template (`rule_refinement.j2`)
+
+```jinja2
+{# SYSTEM #}
+You are a rule standardization engine. Refine the provided rule to be precise,
+unambiguous, and actionable. Do not introduce new requirements.
+Respond ONLY with valid JSON — no markdown, no explanation outside the JSON block.
+
+{# USER #}
+## Rule to Refine
+ID:      {{ rule.id }}
+Name:    {{ rule.name }}
+Content: {{ rule.canonical_content }}
+Domain:  {{ rule.domain_id }}
+
+## Response Schema
+{
+  "id": "same as input ID",
+  "canonical_content": "refined rule text",
+  "change_reason": "brief explanation of what was improved"
+}
+```
+
+### 8.2 Feedback Refinement Template (`rule_refinement_with_feedback.j2`)
+
+```jinja2
+{# SYSTEM #}
+You are a rule standardization engine. A data quality evaluation has identified
+standards violations in the rule below. You MUST address every issue listed
+and rewrite the rule so it satisfies all standards.
+Respond ONLY with valid JSON — no markdown, no explanation outside the JSON block.
+
+{# USER #}
+## Rule to Refine
+ID:      {{ rule.id }}
+Name:    {{ rule.name }}
+Content: {{ rule.canonical_content }}
+Domain:  {{ rule.domain_id }}
+
+## Data Quality Standards Violations — You Must Fix All of These
+{{ feedback.feedback_narrative }}
+
+## Response Schema
+{
+  "id": "same as input ID",
+  "canonical_content": "corrected rule text addressing every violation above",
+  "change_reason": "what was fixed and how each violation was resolved"
+}
+```
+
+### 8.3 Template Renderer
+
+```python
+# prompt/template/template_renderer.py
+from pathlib import Path
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+
+class TemplateRenderer:
+
+    def __init__(self, template_directory: str) -> None:
+        self._env = Environment(
+            loader=FileSystemLoader(template_directory),
+            autoescape=select_autoescape(disabled_extensions=("j2",)),
+            trim_blocks=True,
+            lstrip_blocks=True,
+        )
+
+    def render(self, template_name: str, variables: dict) -> str:
+        template = self._env.get_template(f"{template_name}.j2")
+        return template.render(**variables)
+```
+
+-----
+
+## 9. LLM Communication Layer
+
+### 9.1 LLM Client Protocol
+
+```python
+# llm/client/llm_client.py
+from typing import Protocol
+from llm_service.llm.models.llm_request import LlmRequest
+from llm_service.llm.models.llm_raw_response import LlmRawResponse
+
+
+class LlmClient(Protocol):
+    provider_id: str
+
+    async def complete(self, request: LlmRequest) -> LlmRawResponse: ...
+    def is_available(self) -> bool: ...
+```
+
+### 9.2 LiteLLM Client (Multi-Provider)
+
+```python
+# llm/client/litellm_client.py
+import litellm
+from llm_service.llm.models.llm_request import LlmRequest
+from llm_service.llm.models.llm_raw_response import LlmRawResponse
+
+
+class LiteLlmClient:
+    """
+    Single client for OpenAI, Anthropic, Azure, Bedrock, etc.
+    Provider is selected by the model string: "gpt-4o-mini", "claude-sonnet-4-20250514", etc.
+    """
+    provider_id = "litellm"
+
+    async def complete(self, request: LlmRequest) -> LlmRawResponse:
+        response = await litellm.acompletion(
+            model=request.model,
+            messages=[
+                {"role": "system", "content": request.system_prompt},
+                {"role": "user",   "content": request.user_prompt},
+            ],
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+        )
+        content = response.choices[0].message.content
+        usage   = response.usage
+        return LlmRawResponse(
+            content=content,
+            input_tokens=usage.prompt_tokens,
+            output_tokens=usage.completion_tokens,
+            model=response.model,
+        )
+
+    def is_available(self) -> bool:
+        return True
+```
+
+### 9.3 Retry Policy (tenacity)
+
+```python
+# llm/retry/llm_retry_policy.py
+from tenacity import (
+    retry, stop_after_attempt, wait_exponential,
+    retry_if_exception_type
+)
+import httpx
+
+
+llm_retry = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type((httpx.TimeoutException, httpx.HTTPStatusError)),
+    reraise=True,
+)
+```
+
+-----
+
+## 10. Structured Response & Output
+
+### 10.1 JSON Response Parser
+
+```python
+# response/parser/json_response_parser.py
+import json
+import re
+from typing import TypeVar, Type
+from pydantic import BaseModel
+
+T = TypeVar("T", bound=BaseModel)
+
+JSON_FENCE = re.compile(r"```(?:json)?\s*(\{.*?})\s*```", re.DOTALL)
+
+
+class JsonResponseParser:
+
+    def parse(self, raw: str, target_type: Type[T]) -> T:
+        cleaned = self._extract_json(raw)
+        data    = json.loads(cleaned)
+        return target_type(**data)
+
+    def _extract_json(self, raw: str) -> str:
+        match = JSON_FENCE.search(raw)
+        return match.group(1).strip() if match else raw.strip()
+```
+
+### 10.2 Pipeline Execution Response
+
+```python
+# api/schemas/responses/pipeline_execution_response.py
+from uuid import UUID
+from pydantic import BaseModel
+from llm_service.domain.rule.rule_status import RuleStatus
+
+
+class CheckpointFailureResponse(BaseModel):
+    checkpoint_id: str
+    checkpoint_name: str
+    scope: str
+    severity: str
+    failure_reason: str
+
+
+class CheckpointEvaluationResponse(BaseModel):
+    total_checked: int
+    passed: int
+    failed: int
+    has_blocking_failures: bool
+    failures: list[CheckpointFailureResponse]
+
+
+class RuleRefinementResponse(BaseModel):
+    rule_id: UUID
+    name: str
+    canonical_content: str
+    change_reason: str
+    version: int
+    status: RuleStatus
+
+
+class PipelineExecutionResponse(BaseModel):
+    trace_id: UUID
+    correlation_id: str
+    pipeline_type: str
+    success: bool
+    refined_rule: RuleRefinementResponse
+    checkpoint_report: CheckpointEvaluationResponse
+    duration_ms: int
+    llm_tokens_used: int
+```
+
+-----
+
+## 11. Traceability & Observability
+
+### 11.1 What Gets Traced Per Run
+
+|Stage                |Event Type             |Data Captured                                   |
+|---------------------|-----------------------|------------------------------------------------|
+|Rule Intake          |`RULE_INTAKE`          |rule_id, name, raw length, canonical_content    |
+|Checkpoint Evaluation|`CHECKPOINT_EVALUATION`|total_checked, passed, failed, each failure     |
+|Feedback Build       |`REFINEMENT_FEEDBACK`  |has_failures, count, narrative sent to LLM      |
+|LLM Call             |`LLM_CALL`             |template_id, model, input/output tokens, latency|
+|Refinement Output    |`REFINEMENT_COMPLETE`  |before/after content, change_reason, version    |
+|Pipeline End         |`PIPELINE_COMPLETE`    |total_duration, final_status                    |
+
+### 11.2 Structured Logging with structlog
+
+```python
+# config/logging.py
+import structlog
+
+def configure_logging() -> None:
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(20),
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(),
+    )
+```
+
+Bind `trace_id`, `correlation_id`, and `rule_id` to the structlog context at the start of each request so every log line carries them automatically.
+
+### 11.3 OpenTelemetry Integration
+
+```python
+# config/settings.py (relevant section)
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+
+def configure_telemetry(app, settings) -> None:
+    provider = TracerProvider()
+    provider.add_span_processor(
+        BatchSpanProcessor(OTLPSpanExporter(endpoint=settings.otel_endpoint))
+    )
+    trace.set_tracer_provider(provider)
+    FastAPIInstrumentor.instrument_app(app)
+    HTTPXClientInstrumentor().instrument()
+    SQLAlchemyInstrumentor().instrument()
+```
+
+### 11.4 Key Metrics (Prometheus via `prometheus-fastapi-instrumentator`)
+
+```
+llm_pipeline_executions_total          {pipeline_type, status}
+llm_pipeline_duration_seconds          {pipeline_type}
+llm_checkpoint_evaluations_total       {scope}
+llm_checkpoint_failures_total          {checkpoint_id, scope, severity}
+llm_call_duration_seconds              {provider, model, template_id}
+llm_tokens_used_total                  {provider, model, direction}
+llm_rules_with_blocking_failures_total
+```
+
+-----
+
+## 12. Testing Strategy
+
+### 12.1 Test Pyramid
+
+```
+              ┌──────────────────────┐
+              │  LLM Harness Tests   │  Real LLM, env-gated (pytest.mark.llm)
+              │  Model Comparison    │
+             ─┴──────────────────────┴─
+            ─┬──────────────────────────────┬─
+            │   Integration Tests            │  Full 4-stage, respx LLM mocks
+            │   Async TestClient (httpx)     │  Verifies failures reach LLM prompt
+           ─┴──────────────────────────────┴─
+          ─┬────────────────────────────────────┬─
+          │  Unit Tests (pytest-asyncio)         │
+          │  - test_checkpoint_evaluation_engine │
+          │  - test_refinement_feedback_builder  │
+          │  - test_llm_rule_refiner             │
+         ─┴────────────────────────────────────┴─
+```
+
+### 12.2 conftest.py (Shared Fixtures)
+
+```python
+# tests/conftest.py
+import pytest
+import pytest_asyncio
+from httpx import AsyncClient, ASGITransport
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+
+from llm_service.main import create_app
+from llm_service.db.base import Base
+
+
+@pytest.fixture(scope="session")
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest_asyncio.fixture(scope="function")
+async def db_session():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_session() as session:
+        yield session
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture(scope="function")
+async def client():
+    app = create_app(testing=True)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as c:
+        yield c
+```
+
+### 12.3 Unit — Checkpoint Evaluation Engine
+
+```python
+# tests/unit/checkpoint/test_checkpoint_evaluation_engine.py
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
+
+from llm_service.checkpoint.evaluator.checkpoint_evaluation_engine import (
+    CheckpointEvaluationEngine
+)
+from llm_service.domain.checkpoint.checkpoint_severity import CheckpointSeverity
+from tests.fixtures.rule_fixtures import rule_with_content
+from tests.fixtures.checkpoint_fixtures import min_length_generic
+
+
+@pytest.mark.asyncio
+async def test_fails_blocking_checkpoint_when_rule_too_short():
+    registry = MagicMock()
+    registry.resolve_for.return_value = [min_length_generic(min_length=20)]
+
+    engine = CheckpointEvaluationEngine(
+        registry=registry,
+        evaluators=[LengthEvaluator()]
+    )
+
+    rule   = rule_with_content("Do it.")
+    report = await engine.evaluate(rule)
+
+    assert report.has_blocking_failures is True
+    assert report.failed == 1
+    assert report.failures[0].checkpoint_id == "generic-min-length"
+    assert report.failures[0].severity == CheckpointSeverity.BLOCKING
+
+
+@pytest.mark.asyncio
+async def test_applies_all_four_scope_layers_for_credit_rule():
+    rule = rule_with_content(
+        "Credit score must be >= 620",
+        enterprise_id="ENTERPRISE_GLOBAL",
+        domain_id="DOMAIN_CREDIT"
+    )
+    registry = MagicMock()
+    registry.resolve_for.return_value = [
+        checkpoint_generic(),
+        checkpoint_enterprise("ENTERPRISE_GLOBAL"),
+        checkpoint_domain("DOMAIN_CREDIT"),
+        checkpoint_rule_specific(str(rule.id)),
+    ]
+
+    engine = CheckpointEvaluationEngine(registry=registry, evaluators=[LengthEvaluator()])
+    report = await engine.evaluate(rule)
+
+    assert report.total_checked == 4
+```
+
+### 12.4 Unit — Refinement Feedback Builder
+
+```python
+# tests/unit/checkpoint/test_refinement_feedback_builder.py
+from llm_service.checkpoint.feedback.refinement_feedback_builder import (
+    RefinementFeedbackBuilder
+)
+from llm_service.domain.checkpoint.checkpoint_failure import CheckpointFailure
+from llm_service.domain.checkpoint.checkpoint_scope import CheckpointScope
+from llm_service.domain.checkpoint.checkpoint_severity import CheckpointSeverity
+from tests.fixtures.rule_fixtures import draft_rule
+from tests.fixtures.checkpoint_fixtures import report_with_blocking_failures, report_all_passed
+
+
+def test_returns_empty_feedback_when_no_blocking_failures():
+    builder  = RefinementFeedbackBuilder()
+    feedback = builder.build(draft_rule(), report_all_passed())
+
+    assert feedback.has_failures is False
+    assert feedback.feedback_narrative == ""
+
+
+def test_narrative_contains_all_blocking_failure_reasons():
+    failures = [
+        CheckpointFailure(
+            checkpoint_id="ent-regulatory", checkpoint_name="Regulatory Language",
+            scope=CheckpointScope.ENTERPRISE, severity=CheckpointSeverity.BLOCKING,
+            failure_reason="Contains prohibited term 'should be'",
+            evaluated_value="should be done"
+        ),
+        CheckpointFailure(
+            checkpoint_id="generic-min-length", checkpoint_name="Min Length",
+            scope=CheckpointScope.GENERIC, severity=CheckpointSeverity.BLOCKING,
+            failure_reason="Content is 8 chars, minimum is 20",
+            evaluated_value="Do it."
+        ),
+    ]
+    builder  = RefinementFeedbackBuilder()
+    feedback = builder.build(draft_rule(), report_with_blocking_failures(failures))
+
+    assert feedback.has_failures is True
+    assert "Regulatory Language" in feedback.feedback_narrative
+    assert "prohibited term 'should be'" in feedback.feedback_narrative
+    assert "minimum is 20" in feedback.feedback_narrative
+```
+
+### 12.5 Integration — Full Pipeline with respx
+
+```python
+# tests/integration/test_rule_refinement_pipeline.py
+import pytest
+import respx
+import httpx
+from httpx import AsyncClient
+
+
+OPENAI_CLEAN_RESPONSE = {
+    "choices": [{
+        "message": {
+            "content": '{"id": "r-001", "canonical_content": "Retry attempts must not exceed 3.", "change_reason": "Clarified."}'
+        }
+    }],
+    "usage": {"prompt_tokens": 100, "completion_tokens": 50},
+    "model": "gpt-4o-mini"
+}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_full_pipeline_clean_rule(client: AsyncClient):
+    respx.post("https://api.openai.com/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json=OPENAI_CLEAN_RESPONSE)
+    )
+
+    response = await client.post("/api/v1/pipelines/execute", json={
+        "pipeline_type": "RULE_REFINEMENT",
+        "rule": {
+            "name": "Max Retry Rule",
+            "raw_content": "Retry attempts should not exceed 3.",
+            "enterprise_id": "ENTERPRISE_GLOBAL",
+            "domain_id": "DOMAIN_OPS"
+        }
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["refined_rule"]["canonical_content"] != ""
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_checkpoint_failures_appear_in_llm_prompt(client: AsyncClient):
+    captured_request = {}
+
+    def capture_and_respond(request):
+        captured_request["body"] = request.content.decode()
+        return httpx.Response(200, json=OPENAI_CLEAN_RESPONSE)
+
+    respx.post("https://api.openai.com/v1/chat/completions").mock(
+        side_effect=capture_and_respond
+    )
+
+    await client.post("/api/v1/pipelines/execute", json={
+        "pipeline_type": "RULE_REFINEMENT",
+        "rule": {
+            "name": "Bad Rule",
+            "raw_content": "It should be done ASAP.",   # will fail regulatory checkpoint
+            "enterprise_id": "ENTERPRISE_GLOBAL",
+            "domain_id": "DOMAIN_OPS"
+        }
+    })
+
+    # The LLM prompt must contain the failure reason
+    assert "Regulatory Language" in captured_request["body"]
+    assert "prohibited term" in captured_request["body"]
+```
+
+### 12.6 LLM Harness — Real Provider
+
+```python
+# tests/llm/harness/llm_test_harness.py
+import json
+import os
+import pytest
+from pathlib import Path
+
+
+def load_scenarios():
+    scenario_dir = Path("tests/llm/fixtures/scenarios")
+    return [json.loads(f.read_text()) for f in scenario_dir.glob("*.json")]
+
+
+@pytest.mark.llm
+@pytest.mark.skipif(
+    os.getenv("LLM_TESTS_ENABLED") != "true",
+    reason="LLM_TESTS_ENABLED not set"
+)
+@pytest.mark.parametrize("scenario", load_scenarios(), ids=lambda s: s["name"])
+@pytest.mark.asyncio
+async def test_scenario(scenario, pipeline_executor):
+    result = await pipeline_executor.execute(
+        build_context_from_scenario(scenario)
+    )
+
+    assert result.success, f"Scenario '{scenario['name']}' failed"
+
+    similarity = semantic_score(
+        result.refined_rule.canonical_content,
+        scenario["expected_output"]
+    )
+    assert similarity >= scenario["minimum_semantic_similarity"], (
+        f"Similarity {similarity:.2f} below threshold "
+        f"{scenario['minimum_semantic_similarity']} for '{scenario['name']}'"
+    )
+```
+
+-----
+
+## 13. Configuration & Profiles
+
+### 13.1 Settings (`config/settings.py`)
+
+```python
+# config/settings.py
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
+
+
+class LlmProviderSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="LLM_")
+
+    default_provider: str = "openai"
+    default_model: str    = "gpt-4o-mini"
+    openai_api_key: str   = Field("", env="OPENAI_API_KEY")
+    anthropic_api_key: str = Field("", env="ANTHROPIC_API_KEY")
+    timeout_seconds: int  = 30
+    max_retries: int      = 3
+
+
+class CheckpointSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="CHECKPOINT_")
+
+    config_directory: str = "resources/checkpoints"
+    reload_on_change: bool = True
+
+
+class DatabaseSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="DB_")
+
+    url: str  = "postgresql+asyncpg://llm:secret@localhost:5432/llmservice"
+    echo: bool = False
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
+
+    environment: str = "local"
+    log_level: str   = "INFO"
+    otel_endpoint: str = "http://localhost:4317"
+
+    llm: LlmProviderSettings = LlmProviderSettings()
+    checkpoint: CheckpointSettings = CheckpointSettings()
+    db: DatabaseSettings = DatabaseSettings()
+```
+
+### 13.2 `.env.example`
+
+```dotenv
+ENVIRONMENT=local
+LOG_LEVEL=INFO
+
+# LLM Providers
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+LLM_DEFAULT_PROVIDER=openai
+LLM_DEFAULT_MODEL=gpt-4o-mini
+
+# Database
+DB_URL=postgresql+asyncpg://llm:secret@localhost:5432/llmservice
+
+# Checkpoints
+CHECKPOINT_CONFIG_DIRECTORY=resources/checkpoints
+CHECKPOINT_RELOAD_ON_CHANGE=true
+
+# Observability
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+
+# Testing
+LLM_TESTS_ENABLED=false
+```
+
+### 13.3 Profiles via Environment
+
+|`ENVIRONMENT`|Behaviour                                                            |
+|-------------|---------------------------------------------------------------------|
+|`local`      |SQLite in-memory, LLM calls mocked by default, checkpoint hot-reload |
+|`test`       |SQLite in-memory, tracing disabled, fixed clock via `freezegun`      |
+|`staging`    |PostgreSQL, real LLM providers, reduced sampling                     |
+|`prod`       |Full observability, secrets via Vault, checkpoint hot-reload disabled|
+
+-----
+
+## 14. API Reference
+
+### Execute Pipeline
+
+```
+POST /api/v1/pipelines/execute
+X-Correlation-Id: {uuid}
+Authorization: Bearer {jwt}
+
+{
+  "pipeline_type": "RULE_REFINEMENT",
+  "rule": {
+    "name": "Max Retry Rule",
+    "raw_content": "It should be retried ASAP when things fail.",
+    "enterprise_id": "ENTERPRISE_GLOBAL",
+    "domain_id": "DOMAIN_CREDIT"
+  },
+  "model_options": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "temperature": 0.2
+  }
+}
+
+→ 200 OK
+{
+  "trace_id": "a1b2c3...",
+  "correlation_id": "...",
+  "pipeline_type": "RULE_REFINEMENT",
+  "success": true,
+  "refined_rule": {
+    "rule_id": "...",
+    "name": "Max Retry Rule",
+    "canonical_content": "Retry attempts must not exceed 3 consecutive failures.",
+    "change_reason": "Removed 'should be' and 'ASAP'. Added credit field reference.",
+    "version": 2,
+    "status": "ACTIVE"
+  },
+  "checkpoint_report": {
+    "total_checked": 4,
+    "passed": 2,
+    "failed": 2,
+    "has_blocking_failures": true,
+    "failures": [
+      {
+        "checkpoint_id": "ent-regulatory-language",
+        "checkpoint_name": "Regulatory Language Compliance",
+        "scope": "ENTERPRISE",
+        "severity": "BLOCKING",
+        "failure_reason": "Contains prohibited terms: 'should be', 'ASAP'"
+      },
+      {
+        "checkpoint_id": "domain-credit-field-refs",
+        "checkpoint_name": "Credit Domain Field Reference",
+        "scope": "DOMAIN",
+        "severity": "BLOCKING",
+        "failure_reason": "No recognized credit field term found (LTV, DTI, FICO, etc.)"
+      }
+    ]
+  },
+  "duration_ms": 1840,
+  "llm_tokens_used": 312
+}
+```
+
+### Checkpoint Management
+
+```
+GET    /api/v1/checkpoints                          List (filterable: ?scope=ENTERPRISE)
+POST   /api/v1/checkpoints                          Create checkpoint
+PUT    /api/v1/checkpoints/{id}                     Update
+PUT    /api/v1/checkpoints/{id}/toggle              Enable / disable
+GET    /api/v1/checkpoints/{id}/stats               Failure frequency
+```
+
+### Rule Management
+
+```
+POST   /api/v1/rules                                Intake only (no refinement)
+GET    /api/v1/rules/{id}                           Rule + version history
+GET    /api/v1/rules/{id}/traces                    Pipeline traces for this rule
+```
+
+-----
+
+## 15. Security Considerations
+
+|Concern         |Approach                                                                                                                         |
+|----------------|---------------------------------------------------------------------------------------------------------------------------------|
+|Authentication  |JWT via `python-jose`; `require_role("llm_user")` dependency for execution, `require_role("llm_admin")` for checkpoint management|
+|API Keys        |Loaded from env vars or HashiCorp Vault via `hvac` — never in source                                                             |
+|PII in rules    |`canonical_content` scanned before LLM call; offending fields masked in traces                                                   |
+|Prompt injection|Input sanitized before Jinja2 rendering — strips control characters                                                              |
+|Audit           |`ExecutionTrace` records are append-only; JWT `sub` (actor) stored on each trace                                                 |
+|Rate limiting   |`slowapi` (Starlette middleware, Limits syntax) per API key                                                                      |
+|CORS            |Explicit `allow_origins` — no wildcard in staging/prod                                                                           |
+
+-----
+
+## 16. Dependency Reference
+
+```toml
+# pyproject.toml
+[project]
+name = "llm-service"
+version = "1.0.0"
+requires-python = ">=3.12"
+
+dependencies = [
+    # Web framework
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+
+    # Data validation & settings
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+
+    # LLM providers
+    "litellm>=1.40.0",          # multi-provider: OpenAI, Anthropic, Azure, Bedrock, etc.
+    "openai>=1.30.0",
+    "anthropic>=0.28.0",
+
+    # Templating
+    "jinja2>=3.1.4",
+
+    # Database
+    "sqlalchemy[asyncio]>=2.0.30",
+    "asyncpg>=0.29.0",          # PostgreSQL async driver
+    "aiosqlite>=0.20.0",        # SQLite async driver (local/test)
+    "alembic>=1.13.1",
+
+    # HTTP client
+    "httpx>=0.27.0",
+
+    # Retry
+    "tenacity>=8.3.0",
+
+    # Observability
+    "structlog>=24.2.0",
+    "opentelemetry-sdk>=1.24.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.24.0",
+    "opentelemetry-instrumentation-fastapi>=0.45b0",
+    "opentelemetry-instrumentation-httpx>=0.45b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.45b0",
+    "prometheus-fastapi-instrumentator>=7.0.0",
+
+    # Auth
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+
+    # Rate limiting
+    "slowapi>=0.1.9",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.7",
+    "pytest-cov>=5.0.0",
+    "respx>=0.21.1",            # async HTTP mocking (replaces WireMock)
+    "httpx>=0.27.0",            # async test client
+    "freezegun>=1.5.0",         # fixed clock
+    "factory-boy>=3.3.0",       # test data factories
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "llm: marks tests that call real LLM providers (env-gated)",
+    "integration: marks integration tests",
+]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+```
+
+-----
+
+## 17. Adding a New LLM Pipeline
+
+Adding a new pipeline (e.g., document summarization) requires only these steps.
+
+**Step 1 — Add to the enum**
+
+```python
+# domain/pipeline/pipeline_type.py
+class PipelineType(str, Enum):
+    RULE_REFINEMENT = "RULE_REFINEMENT"
+    SUMMARIZATION   = "SUMMARIZATION"   # ← add here
+```
+
+**Step 2 — Implement the Pipeline abstract class**
+
+```python
+# pipeline/impl/summarization_pipeline.py
+class SummarizationPipeline(Pipeline):
+
+    pipeline_type = PipelineType.SUMMARIZATION
+
+    def __init__(
+        self,
+        checkpoint_engine: CheckpointEvaluationEngine,
+        feedback_builder: RefinementFeedbackBuilder,
+        assembler: DefaultPromptAssembler,
+        llm_router: LlmRouter,
+        trace_service: TraceService,
+    ) -> None: ...
+
+    async def execute(self, context: PipelineContext) -> PipelineResult:
+        # Uses same shared services — only the business logic differs
+        ...
+```
+
+**Step 3 — Register in the pipeline registry**
+
+```python
+# pipeline/registry.py
+def build_registry(settings: Settings) -> PipelineRegistry:
+    return PipelineRegistry({
+        PipelineType.RULE_REFINEMENT : build_rule_refinement_pipeline(settings),
+        PipelineType.SUMMARIZATION   : build_summarization_pipeline(settings),  # ← add
+    })
+```
+
+**Step 4 — Add Jinja2 templates**
+
+```
+resources/prompts/summarization.j2
+```
+
+**Step 5 — Add checkpoints (JSON only)**
+
+```
+resources/checkpoints/domain/ops/summary_length.json
+```
+
+**Step 6 — Add test scenarios**
+
+```
+tests/llm/fixtures/scenarios/summarization_scenario_01.json
+```
+
+`PipelineExecutor` routes to the new pipeline automatically by `pipeline_type`. No other code changes.
+
+-----
+
+## 18. Glossary
+
+|Term                          |Definition                                                                                                  |
+|------------------------------|------------------------------------------------------------------------------------------------------------|
+|**Checkpoint**                |A declarative data quality standard in JSON. Evaluated against the raw rule **before** LLM refinement.      |
+|**CheckpointEvaluationReport**|Full result of evaluating a rule against all scoped checkpoints, including every `CheckpointFailure`.       |
+|**CheckpointFailure**         |A single failed checkpoint — failure reason and problematic value become LLM fix instructions.              |
+|**CheckpointScope**           |Level the checkpoint applies at: GENERIC, ENTERPRISE, DOMAIN, or RULE.                                      |
+|**CompiledPrompt**            |Fully rendered system + user message pair, ready to send to the LLM.                                        |
+|**Frozen Pydantic Model**     |A Pydantic model with `model_config = ConfigDict(frozen=True)` — immutable value object.                    |
+|**LiteLLM**                   |Python library providing a unified interface to OpenAI, Anthropic, Azure, Bedrock, and others.              |
+|**Pipeline**                  |A named async LLM workflow. All pipelines share checkpoint, prompt, LLM, response, and trace infrastructure.|
+|**PipelineExecutor**          |Routes a `PipelineContext` to the correct `Pipeline` and wraps execution in distributed tracing.            |
+|**Protocol**                  |Python `typing.Protocol` — structural interface; implementations don’t need to inherit.                     |
+|**RefinementFeedback**        |Payload built from `CheckpointFailure` records, injected into the LLM prompt as fix instructions.           |
+|**respx**                     |Async HTTP mocking library for `httpx` — Python equivalent of WireMock for testing LLM clients.             |
+|**StructuredResponse**        |Typed, validated wrapper around the LLM’s parsed JSON output.                                               |
+|**tenacity**                  |Python retry library — used for LLM call retries with exponential backoff.                                  |
+
+-----
+
+*Document version 1.0 (Python Edition) — Python 3.12 / FastAPI / Pydantic v2 / LiteLLM*
+*Flow: Rule Intake → Checkpoint Evaluation → Rule Refinement (LLM) → Output*
+*Checkpoints evaluate raw rule first; failures become LLM instructions*
