@@ -1,0 +1,75 @@
+# Devin ACU Optimization: Best Practices (Dos and Don'ts)
+
+Optimizing ACU (Agent Compute Unit) usage in Devin is about maximizing 'useful work' per credit by reducing Devin's autonomous 'trial-and-error' loops.
+
+## ✅ The "Dos" (Best Practices)
+
+### 1. Provide "Golden References"
+Instead of asking Devin to figure out a pattern, point it to an existing file that serves as a perfect template.
+* **Example:** *"Create a new `UserReport` service. Use `AccountReport.java` as a template for the structure and error handling."*
+* **Reason:** Devin won't waste ACUs scanning your entire codebase to guess your style; it goes straight to the reference.
+
+### 2. Use "Ask Devin" for Scoping First
+Before starting a full coding session, use the **Ask Devin** feature (the chat-only mode) to explore the codebase.
+* **Example:** *"Ask Devin: Where are the database migration files stored, and what is the naming convention?"*
+* **Reason:** Scoping in chat is often faster and uses fewer resources. Once you have the context, you can give a precise instruction in a coding session.
+
+### 3. Break Tasks into "Vertical Slices"
+Devin is efficient at 'Wide & Shallow' tasks but burns ACUs exponentially on 'Tall & Deep' (complex) tasks.
+* **Example:** Instead of *"Upgrade the whole project to Spring Boot 3,"* say *"Update the `pom.xml` dependencies and fix only the compilation errors in the `security` module."*
+* **Reason:** Smaller tasks have a higher success rate. If Devin fails a 5-hour task, you lose those ACUs. If it fails a 30-minute slice, the loss is minimal.
+
+### 4. Supply Explicit Verification Steps
+Tell Devin exactly how to prove the job is done.
+* **Example:** *"After the fix, run `mvn test -Dtest=UserAuthTest`. Only open a PR if this test passes."*
+* **Reason:** Prevents Devin from 'looping' where it thinks it's done, realizes it's not, and tries again multiple times.
+
+### 5. Utilize the "Knowledge" Base
+Upload project-specific documentation, READMEs, or architectural guidelines to the Knowledge base.
+* **Example:** Uploading your team's API design standards or a specific SDK's documentation.
+* **Reason:** Devin can reference these instantly without spending ACUs searching the web or trial-and-error testing.
+
+### 6. Review and Refine the "Plan"
+Before Devin starts coding, it presents a plan. Always review it and suggest edits if it seems to be taking a long route.
+* **Example:** *"Your plan mentions searching the entire `/src` folder, but the logic you need is only in `/src/services`."*
+* **Reason:** Correcting the plan early saves significant execution time.
+
+---
+
+## ❌ The "Don'ts" (Avoid These)
+
+### 1. Avoid Subjective Instructions
+Subjective words like "cleaner," "better," or "modern" are ACU traps.
+* **Example:** *"Refactor this code to be more modern."*
+* **Reason:** Devin will spend cycles trying different patterns and self-critiquing, leading to a long, expensive session.
+
+### 2. Don't Let Devin "Install the World" Every Time
+If your environment setup (e.g., `npm install` or pulling large Docker images) takes 10 minutes, you pay for those minutes every time.
+* **Example:** Running a session without a pre-configured environment.
+* **Reason:** Pre-configure your environment or use the Knowledge feature to store setup shortcuts.
+
+### 3. Don't Give High-Level Research Tasks in Coding Mode
+If you need to know *if* a library is compatible with your stack, don't ask in the coding terminal.
+* **Example:** *"Devin, research which logging library is best for this project and implement it."*
+* **Reason:** Research involves high browser usage and 'thinking' time. Do the research in Chat mode or externally first.
+
+### 4. Don't Use Auto-Reload for Complex Tasks
+Devin has an "auto-reload ACU" setting.
+* **Don't:** Turn this on when testing a new, complex prompt.
+* **Reason:** If Devin gets stuck in an infinite "loop-fix-fail" cycle, it will keep consuming ACUs until your balance is gone.
+
+### 5. Don't Forget to Terminate Idle Sessions
+If you walk away from a session where Devin is waiting for your input, it may still hold resources or keep the session 'hot'.
+* **Example:** Leaving a session open overnight after Devin finished a task.
+* **Reason:** While Devin usually pauses, keeping many active sessions can make your dashboard harder to manage and lead to accidental ACU burn if you accidentally trigger a retry.
+
+---
+
+## 📊 Summary Comparison
+
+| Task Attribute | High ACU Usage (Avoid) | Low ACU Usage (Optimal) |
+| :--- | :--- | :--- |
+| **Scope** | "Build a whole feature." | "Implement this specific API endpoint." |
+| **Context** | "Search the repo for how we do X." | "Refer to `file_path/example.py` for X." |
+| **Testing** | "Make sure it works." | "Run `npm test` and verify output is 'Success'." |
+| **Feedback** | Allowing unlimited autonomous retries. | Reviewing the plan and setting a session limit. |
