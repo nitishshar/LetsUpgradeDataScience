@@ -1,0 +1,249 @@
+# ================================================================
+DEVIN ACU OPTIMIZATION GUIDE — DOS AND DON’TS
+
+## 1 ACU ≈ 15 minutes of active work | $2.25/ACU (Core) | $2.00/ACU (Team)
+
+# ================================================================
+✅ THE DOS — MAXIMIZE EVERY ACU
+
+## DO 1 — PROVIDE A “GOLDEN REFERENCE” FILE
+
+Instead of describing a pattern, point Devin to an existing file
+that already demonstrates it. Devin won’t waste ACUs scanning
+the entire codebase to guess your style.
+
+✗ COSTLY:
+“Create a new UserReport service following our project
+conventions.”
+→ Devin scans the whole repo to infer conventions.
+
+✓ EFFICIENT:
+“Create a new UserReport service. Use AccountReport.java
+as the exact template — same structure, error handling,
+and logging pattern.”
+→ Devin goes straight to the reference. No scan needed.
+
+## DO 2 — USE “ASK DEVIN” (CHAT MODE) TO SCOPE BEFORE CODING
+
+Chat mode uses fewer resources than a full coding session.
+Gather facts first, then give a precise instruction.
+
+✗ COSTLY:
+[Coding session]
+“Find where DB migrations live and figure out the naming
+convention, then create one for the new payments table.”
+→ Discovery + execution mixed = expensive.
+
+✓ EFFICIENT:
+[Ask Devin first — chat mode]
+“Where are DB migrations stored and what’s the naming
+convention?”
+
+```
+[Then coding session]
+"Create migration in /db/migrations/ named
+ V23__add_payments_table.sql with columns: id, amount,
+ status, created_at."
+→ Discovery is cheap; execution is precise.
+```
+
+## DO 3 — SUPPLY EXPLICIT, MACHINE-VERIFIABLE ACCEPTANCE CRITERIA
+
+Without a clear “done” signal, Devin loops — guesses it’s
+finished, finds a crack, retries. A specific test command
+short-circuits this loop entirely.
+
+✗ COSTLY:
+“Fix the login bug and make sure it works.”
+→ Open-ended. Devin self-critiques and retries indefinitely.
+
+✓ EFFICIENT:
+“Fix the null pointer in AuthService.java line 42.
+Run: mvn test -Dtest=UserAuthTest
+Only open a PR if all 3 tests pass.
+Stop and report if they don’t.”
+→ Binary done/fail signal. No loop.
+
+## DO 4 — BREAK LARGE TASKS INTO VERTICAL SLICES
+
+Complexity cost is exponential. A 5-hour task that fails wastes
+all 5 hours. Five 1-hour slices give you 4 wins even if one
+fails. There’s no concurrent session limit — parallelise.
+
+✗ COSTLY:
+“Upgrade the whole project to Spring Boot 3, fix all
+breaking changes, update all tests, and update the
+deployment config.”
+→ Monolithic. One failure loses everything.
+
+✓ EFFICIENT:
+Session A: “Update pom.xml deps only. Run compile,
+report errors.”
+Session B: “Fix compile errors in /security module only.”
+Session C: “Fix compile errors in /api module only.”
+Session D: “Update test configs after B+C are merged.”
+→ Isolated, recoverable, parallelisable.
+
+## DO 5 — REVIEW AND TRIM THE PLAN BEFORE DEVIN STARTS CODING
+
+Interactive Planning is essentially free. Letting Devin execute
+a bloated plan costs real ACUs. A 2-minute plan review can
+eliminate hours of misdirected work.
+
+✗ COSTLY:
+Devin’s plan: “Search entire /src directory for
+relevant files…”
+[You click Approve without reading]
+→ You pay for a broad scan you didn’t need.
+
+✓ EFFICIENT:
+Devin’s plan: “Search entire /src directory…”
+[You edit before approving]:
+“The logic you need is only in /src/services/auth —
+search there only. Skip /src/legacy entirely.”
+→ Scope cut before a single ACU is spent on execution.
+
+## DO 6 — PRE-LOAD CONTEXT INTO THE KNOWLEDGE BASE
+
+Every session where Devin re-discovers your API conventions,
+coding standards, or infra setup is wasted ACUs. Store once;
+Devin reads them instantly every session.
+
+✗ COSTLY:
+“Research which logging library we use and how we
+structure API responses, then implement the endpoint.”
+→ Rediscovery cost paid every single session.
+
+✓ EFFICIENT:
+[Knowledge base has: api-standards.md, logging-guide.md]
+“Implement the /orders endpoint. Follow the API standards
+and logging guide already in your Knowledge base.”
+→ Zero discovery cost. Instant context.
+
+# ================================================================
+❌ THE DON’TS — ACU TRAPS TO AVOID
+
+## DON’T 1 — AVOID SUBJECTIVE OR QUALITATIVE INSTRUCTIONS
+
+Words like “cleaner,” “better,” or “more modern” have no exit
+condition. Devin attempts multiple approaches, self-critiques,
+and iterates — an expensive loop with no guaranteed end.
+
+✗ ACU TRAP:
+“Refactor this code to be cleaner and more modern.”
+“Make the UI look better.”
+“Improve overall performance.”
+→ No measurable done state. Runs until ACUs run out.
+
+✓ PRECISE ALTERNATIVE:
+“Refactor PaymentService.java: extract the 3 private
+methods into a new PaymentValidator class. No logic
+changes — just structural reorganisation.”
+“Change primary button color to #3B82F6, font-size to 16px.”
+“Add index on orders.customer_id. Target: query under 200ms.”
+
+## DON’T 2 — DON’T MIX RESEARCH + IMPLEMENTATION IN CODING MODE
+
+Browser-based research in a coding session is expensive — Devin
+opens tabs, reads docs, compares options. Do research in chat
+mode or externally; then give Devin just the decision.
+
+✗ ACU TRAP:
+[Coding session]
+“Research which caching library is best for our Spring
+Boot app, decide, then implement it.”
+→ High browser usage + thinking time in expensive mode.
+
+✓ PRECISE ALTERNATIVE:
+[You decide externally: use Caffeine cache]
+[Coding session]
+“Add Caffeine cache to ProductService.java.
+Cache getProductById() with TTL=10min, max 500 entries.
+Reference: https://github.com/ben-manes/caffeine”
+→ Decision made before the session starts.
+
+## DON’T 3 — DON’T ENABLE AUTO-RELOAD FOR NEW/COMPLEX PROMPTS
+
+If Devin enters a loop (implement → test fails → fix → same
+failure → fix differently → repeat), auto-reload silently
+refills the ACU tank and the loop continues overnight.
+
+✗ ACU TRAP:
+Auto-reload = ON
+New complex task: “Migrate entire DB schema to new ORM”
+[Devin loops on a migration error × 40 retries]
+→ Wake up to $90 in ACU charges.
+
+✓ SAFER APPROACH:
+Auto-reload = OFF for new/complex tasks.
+Run 1 session. Review Session Insights.
+If it succeeds → consider enabling auto-reload for this
+type of task going forward.
+If it loops → fix the prompt first, then retry.
+
+## DON’T 4 — DON’T BUNDLE MULTI-TOPIC TASKS IN ONE SESSION
+
+Every context switch forces Devin to load a new mental model
+of a different codebase area. Each switch adds overhead. If
+one part fails, the entire session cost is wasted.
+
+✗ ACU TRAP:
+“Fix the login bug, then update the README, then refactor
+the payment module, then add tests for the cart service.”
+→ 4 context switches. One failure = full session wasted.
+
+✓ PRECISE ALTERNATIVE:
+Session A: “Fix login bug in AuthService.java line 42.”
+Session B: “Update README deployment section with these
+new steps: [steps here].”
+Session C: “Refactor PaymentModule to use
+IPaymentGateway interface.”
+Session D: “Add unit tests for CartService covering:
+addItem, removeItem, calcTotal.”
+→ Isolated, parallelisable, each independently reviewable.
+
+## DON’T 5 — DON’T SEND DEVIN INTO A LARGE CODEBASE UNSCOPPED
+
+A monorepo with 200k lines costs significantly more per action
+than pointing Devin at 3 specific files. More context to
+process = higher ACU cost per step.
+
+✗ ACU TRAP:
+“Find where order status update logic is and fix the bug
+where cancelled orders aren’t being notified.”
+→ Full repo search. Expensive.
+
+✓ PRECISE ALTERNATIVE:
+“Fix bug in OrderService.java → updateStatus() method.
+When status = CANCELLED, the notifyCustomer() call on
+line 87 is skipped. It should always fire.
+Only touch this file.”
+→ 1 file, 1 method, 1 fix. Minimal context load.
+
+# ================================================================
+📊 QUICK REFERENCE SUMMARY
+
+|DIMENSION  |✗ AVOID (HIGH ACU)           |✓ DO INSTEAD (LOW ACU)                      |
+|-----------|-----------------------------|--------------------------------------------|
+|Scope      |“Build the whole feature”    |“Implement /orders/create.ts endpoint only” |
+|Context    |“Search repo for how we do X”|“Refer to AccountReport.java for X”         |
+|Done Signal|“Make sure it works”         |“Run npm test — stop if UserAuthTest fails” |
+|Language   |“Cleaner, better, modern”    |“Extract methods A,B,C into Validator class”|
+|Research   |“Research and then implement”|Decide externally → give Devin the answer   |
+|Auto-reload|On for new/complex prompts   |Off until prompt is proven reliable         |
+|Task Count |4 unrelated tasks, 1 session |1 task per session, parallelise             |
+|Planning   |Auto-approve Devin’s plan    |Read, trim scope, then approve              |
+
+# ================================================================
+💡 FREE ACU TIME — EXPLOIT THESE
+
+Devin does NOT consume ACUs while:
+• Waiting for YOUR response in chat
+• A test suite is running
+• Cloning or setting up a repository
+
+Take your time reviewing output before replying.
+That review window costs you nothing.
+
+# ================================================================
+docs.devin.ai/admin/billing/usage
